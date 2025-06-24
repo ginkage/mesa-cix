@@ -1853,6 +1853,17 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
    for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
       src[i] = get_alu_src(ctx, alu, i, &raw_src[i], &stype[i]);
 
+   // special condition to handle isnan conversion with single channel.
+   // get_alu_src will emit OpCompositeExtract per input, thus breaking raw_src[0] == raw_src[1]
+   if (alu->op == nir_op_fneu || alu->op == nir_op_feq) {
+      if ((alu->src[0].src.ssa == alu->src[1].src.ssa) 
+            && (alu->src[0].swizzle[0] == alu->src[1].swizzle[0]))
+      {
+         src[1] = src[0];
+         raw_src[1] = raw_src[0];
+      }
+   }
+
    nir_alu_type typeless_type = stype[is_bcsel];
    if (nir_op_infos[alu->op].num_inputs > 1 &&
        alu_op_is_typeless(alu->op) &&
