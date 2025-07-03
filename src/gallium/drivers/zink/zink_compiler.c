@@ -1400,6 +1400,25 @@ zink_screen_init_compiler(struct zink_screen *screen)
    }
 }
 
+struct fs_rewrite_output_type_data {
+   const struct glsl_type* type;
+   nir_variable* target_var;
+};
+
+static bool
+fs_rewrite_output_type_pass(nir_builder *b, nir_instr *intr, void *data) {
+   struct fs_rewrite_output_type_data *frotd = data;
+   if (intr->type != nir_instr_type_deref)
+      return false;
+
+   nir_deref_instr* deref = nir_instr_as_deref(intr);
+   if (deref->var == frotd->target_var) {
+      deref->type = frotd->type;
+      return true;
+   }
+   return false;
+}
+
 struct nir_shader *
 zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens)
 {
@@ -1409,7 +1428,25 @@ zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens)
       fprintf(stderr, "---8<---\n\n");
    }
 
-   return tgsi_to_nir(tokens, screen, false);
+   struct nir_shader* nir = tgsi_to_nir(tokens, screen, false);
+
+   struct zink_screen* zs = zink_screen(screen);
+   if (zs->blit_state.active && nir->info.stage == MESA_SHADER_FRAGMENT) {
+      /* we know what texture formats will be used with this shader, so let's make the output type match. */
+      nir_foreach_shader_out_variable(var, nir) {
+         if (util_format_is_pure_uint(zs->blit_state.dst_fmt)) {
+            var->type = glsl_uvec_type(var->type->vector_elements);
+         } else if (util_format_is_pure_sint(zs->blit_state.dst_fmt)) {
+            var->type = glsl_ivec_type(var->type->vector_elements);
+         } else {
+            continue;
+         }
+         struct fs_rewrite_output_type_data frotd = {.type = var->type, .target_var = var};
+         nir_shader_instructions_pass(nir, fs_rewrite_output_type_pass, nir_metadata_control_flow, &frotd);
+      }
+   }
+
+   return nir;
 }
 
 

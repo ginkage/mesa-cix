@@ -372,6 +372,7 @@ void
 zink_blit(struct pipe_context *pctx,
           const struct pipe_blit_info *info)
 {
+   struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_context *ctx = zink_context(pctx);
    const struct util_format_description *src_desc = util_format_description(info->src.format);
    const struct util_format_description *dst_desc = util_format_description(info->dst.format);
@@ -405,6 +406,9 @@ zink_blit(struct pipe_context *pctx,
          return;
    }
 
+   screen->blit_state.active = true;
+   screen->blit_state.dst_fmt = dst_desc->format;
+
    /* every path below reads a swapchain source from the image the readback picks */
    struct pipe_blit_info src_info = *info;
    if (src->obj->dt) {
@@ -434,8 +438,6 @@ zink_blit(struct pipe_context *pctx,
             goto end;
       }
    }
-
-
 
    bool stencil_blit = false;
    if (!util_blitter_is_blit_supported(ctx->blitter, info)) {
@@ -609,6 +611,7 @@ zink_blit(struct pipe_context *pctx,
    }
    ctx->unordered_blitting = false;
 end:
+   screen->blit_state.active = false;
    if (needs_present_readback) {
       zink_resource_disable_unordered(src, false);
       zink_resource_disable_unordered(dst, true);
