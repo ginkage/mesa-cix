@@ -1659,6 +1659,10 @@ tc_set_framebuffer_state(struct pipe_context *_pipe,
       assert(!tc->renderpass_info_recording->resolve[0] &&
              !tc->renderpass_info_recording->resolve[1]);
       tc->seen_fb_state = true;
+
+      /* invalidate invalidations */
+      tc->renderpass_info_recording->cbuf_invalidate = 0;
+      tc->renderpass_info_recording->zsbuf_invalidate = false;
    }
    /* ref for cmd */
    struct pipe_resource *zsref = NULL;
