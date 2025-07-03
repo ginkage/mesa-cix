@@ -79,7 +79,7 @@ zink_mesh_cache_stages(uint32_t stages_present)
 static ALWAYS_INLINE bool
 zink_is_zsbuf_used(const struct zink_context *ctx)
 {
-   return ctx->blitting || tc_renderpass_info_is_zsbuf_used(&ctx->dynamic_fb.tc_info);
+   return ctx->blitting || zink_screen(ctx->base.screen)->blit_state.active || tc_renderpass_info_is_zsbuf_used(&ctx->dynamic_fb.tc_info);
 }
 
 static ALWAYS_INLINE bool

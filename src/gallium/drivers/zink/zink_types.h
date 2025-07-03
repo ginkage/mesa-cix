@@ -1365,6 +1365,11 @@ struct zink_format_props {
    VkFormatFeatureFlags2 bufferFeatures;
 };
 
+struct zink_blit_state {
+   bool active;
+   enum pipe_format dst_fmt;
+};
+
 struct zink_screen {
    struct pipe_screen base;
 
@@ -1388,6 +1393,7 @@ struct zink_screen {
    struct util_queue flush_queue;
    simple_mtx_t copy_context_lock;
    struct zink_context *copy_context;
+   struct zink_blit_state blit_state;
 
    struct zink_batch_state *free_batch_states; //unused batch states
    struct zink_batch_state *last_free_batch_state; //for appending
