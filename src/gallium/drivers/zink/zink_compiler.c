@@ -4159,6 +4159,11 @@ remove_interpolate_at_sample(struct nir_builder *b, nir_intrinsic_instr *interp,
    return true;
 }
 
+static bool robust_image_lowering_filter(const nir_intrinsic_instr *intrin, const void *data)
+{
+   return (intrin->intrinsic == nir_intrinsic_image_deref_load);
+}
+
 struct zink_shader_object
 zink_shader_compile(struct zink_screen *screen, bool can_shobj, struct zink_shader *zs,
                     nir_shader *nir, const struct zink_shader_key *key, const void *extra_data, struct zink_program *pg)
@@ -5735,6 +5740,12 @@ zink_shader_init(struct zink_screen *screen, struct zink_shader *zs)
          break;
       }
    }
+
+   if (screen->driver_compiler_workarounds.lower_robustImageAccess2) {
+      NIR_PASS(_, nir, nir_lower_robust_access,
+         robust_image_lowering_filter, NULL);
+   }
+
    if (nir->info.stage < MESA_SHADER_FRAGMENT)
       nir_gather_xfb_info_from_intrinsics(nir);
    NIR_PASS(_, nir, fix_vertex_input_locations);
