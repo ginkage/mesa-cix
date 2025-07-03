@@ -2305,6 +2305,13 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
       break;
    }
 
+   case nir_op_ball_iequal4: {
+      SpvId bool_type = get_bvec_type(ctx, num_components);
+      SpvId is_equal = spirv_builder_emit_binop(&ctx->builder, SpvOpLogicalEqual, bool_type, src[0], src[1]);
+      result = spirv_builder_emit_unop(&ctx->builder, SpvOpAll, spirv_builder_type_bool(&ctx->builder), is_equal);
+      break;
+   }
+
    default:
       fprintf(stderr, "emit_alu: not implemented (%s)\n",
               nir_op_infos[alu->op].name);
