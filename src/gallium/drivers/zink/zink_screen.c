@@ -674,6 +674,22 @@ zink_init_shader_caps(struct zink_screen *screen)
                  ZINK_MAX_SHADER_IMAGES);
       }
 
+      switch (i) {
+      case MESA_SHADER_VERTEX:
+      case MESA_SHADER_TESS_CTRL:
+      case MESA_SHADER_TESS_EVAL:
+      case MESA_SHADER_GEOMETRY:
+         if (!screen->info.feats.features.vertexPipelineStoresAndAtomics)
+            caps->max_shader_images = 0;
+         break;
+      case MESA_SHADER_FRAGMENT:
+         if (!screen->info.feats.features.fragmentStoresAndAtomics)
+            caps->max_shader_images = 0;
+         break;
+      default:
+         break;
+      }
+
       caps->cont_supported = true;
    }
 }
