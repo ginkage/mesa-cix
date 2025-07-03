@@ -2417,6 +2417,9 @@ dri2_wl_kopper_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
       kopperSwapBuffers(dri2_surf->dri_drawable, __DRI2_FLUSH_CONTEXT | __DRI2_FLUSH_INVALIDATE_ANCILLARY);
    }
 
+   dri2_surf->wl_win->attached_width = dri2_surf->base.Width;
+   dri2_surf->wl_win->attached_height = dri2_surf->base.Height;
+
    dri2_surf->current = dri2_surf->back;
    dri2_surf->back = NULL;
 
