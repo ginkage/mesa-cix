@@ -565,16 +565,19 @@ tegra_screen_create(int fd)
       screen->base.can_create_resource = tegra_screen_can_create_resource;
 
    screen->base.resource_create = tegra_screen_resource_create;
-   screen->base.resource_create_front = tegra_screen_resource_create_front;
+   if (screen->gpu->resource_create_front)
+      screen->base.resource_create_front = tegra_screen_resource_create_front;
    screen->base.resource_from_handle = tegra_screen_resource_from_handle;
    screen->base.resource_from_user_memory = tegra_screen_resource_from_user_memory;
    screen->base.resource_get_handle = tegra_screen_resource_get_handle;
    screen->base.resource_destroy = tegra_screen_resource_destroy;
 
-   screen->base.flush_frontbuffer = tegra_screen_flush_frontbuffer;
+   if (screen->gpu->flush_frontbuffer)
+      screen->base.flush_frontbuffer = tegra_screen_flush_frontbuffer;
    screen->base.fence_reference = tegra_screen_fence_reference;
    screen->base.fence_finish = tegra_screen_fence_finish;
-   screen->base.fence_get_fd = tegra_screen_fence_get_fd;
+   if (screen->gpu->fence_get_fd)
+      screen->base.fence_get_fd = tegra_screen_fence_get_fd;
 
    screen->base.get_driver_query_info = tegra_screen_get_driver_query_info;
    screen->base.get_driver_query_group_info = tegra_screen_get_driver_query_group_info;

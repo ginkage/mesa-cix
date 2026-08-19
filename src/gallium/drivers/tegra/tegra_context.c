@@ -1228,7 +1228,8 @@ tegra_screen_context_create(struct pipe_screen *pscreen, void *priv,
    context->base.render_condition = tegra_render_condition;
 
    context->base.create_query = tegra_create_query;
-   context->base.create_batch_query = tegra_create_batch_query;
+   if (context->gpu->create_batch_query)
+      context->base.create_batch_query = tegra_create_batch_query;
    context->base.destroy_query = tegra_destroy_query;
    context->base.begin_query = tegra_begin_query;
    context->base.end_query = tegra_end_query;
@@ -1310,8 +1311,10 @@ tegra_screen_context_create(struct pipe_screen *pscreen, void *priv,
    context->base.clear_buffer = tegra_clear_buffer;
    context->base.flush = tegra_flush;
 
-   context->base.create_fence_fd = tegra_create_fence_fd;
-   context->base.fence_server_sync = tegra_fence_server_sync;
+   if (context->gpu->create_fence_fd)
+      context->base.create_fence_fd = tegra_create_fence_fd;
+   if (context->gpu->fence_server_sync)
+      context->base.fence_server_sync = tegra_fence_server_sync;
 
    context->base.create_sampler_view = tegra_create_sampler_view;
    context->base.sampler_view_destroy = tegra_sampler_view_destroy;
@@ -1343,12 +1346,16 @@ tegra_screen_context_create(struct pipe_screen *pscreen, void *priv,
    context->base.flush_resource = tegra_flush_resource;
    context->base.invalidate_resource = tegra_invalidate_resource;
 
-   context->base.get_device_reset_status = tegra_get_device_reset_status;
-   context->base.set_device_reset_callback = tegra_set_device_reset_callback;
-   context->base.dump_debug_state = tegra_dump_debug_state;
+   if (context->gpu->get_device_reset_status)
+      context->base.get_device_reset_status = tegra_get_device_reset_status;
+   if (context->gpu->set_device_reset_callback)
+      context->base.set_device_reset_callback = tegra_set_device_reset_callback;
+   if (context->gpu->dump_debug_state)
+      context->base.dump_debug_state = tegra_dump_debug_state;
    context->base.emit_string_marker = tegra_emit_string_marker;
 
-   context->base.generate_mipmap = tegra_generate_mipmap;
+   if (context->gpu->generate_mipmap)
+      context->base.generate_mipmap = tegra_generate_mipmap;
 
    context->base.create_texture_handle = tegra_create_texture_handle;
    context->base.delete_texture_handle = tegra_delete_texture_handle;
