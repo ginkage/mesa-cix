@@ -496,8 +496,16 @@ tegra_set_framebuffer_state(struct pipe_context *pcontext,
                             const struct pipe_framebuffer_state *fb)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
+   struct pipe_framebuffer_state state = *fb;
+   unsigned int i;
 
-   context->gpu->set_framebuffer_state(context->gpu, fb);
+   for (i = 0; i < fb->nr_cbufs; i++)
+      state.cbufs[i].texture = tegra_resource_unwrap(fb->cbufs[i].texture);
+
+   state.zsbuf.texture = tegra_resource_unwrap(fb->zsbuf.texture);
+   state.resolve = tegra_resource_unwrap(fb->resolve);
+
+   context->gpu->set_framebuffer_state(context->gpu, &state);
 }
 
 static void
@@ -735,9 +743,11 @@ tegra_clear_render_target(struct pipe_context *pcontext,
                           bool render_condition)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
-   struct tegra_surface *dst = to_tegra_surface(pdst);
+   struct pipe_surface dst = *pdst;
 
-   context->gpu->clear_render_target(context->gpu, dst->gpu, color, dstx,
+   dst.texture = tegra_resource_unwrap(pdst->texture);
+
+   context->gpu->clear_render_target(context->gpu, &dst, color, dstx,
                                      dsty, width, height, render_condition);
 }
 
@@ -754,9 +764,11 @@ tegra_clear_depth_stencil(struct pipe_context *pcontext,
                           bool render_condition)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
-   struct tegra_surface *dst = to_tegra_surface(pdst);
+   struct pipe_surface dst = *pdst;
 
-   context->gpu->clear_depth_stencil(context->gpu, dst->gpu, flags, depth,
+   dst.texture = tegra_resource_unwrap(pdst->texture);
+
+   context->gpu->clear_depth_stencil(context->gpu, &dst, flags, depth,
                                      stencil, dstx, dsty, width, height,
                                      render_condition);
 }

@@ -54,24 +54,4 @@ tegra_resource_unwrap(struct pipe_resource *resource)
    return to_tegra_resource(resource)->gpu;
 }
 
-struct tegra_surface {
-   struct pipe_surface base;
-   struct pipe_surface *gpu;
-};
-
-static inline struct tegra_surface *
-to_tegra_surface(struct pipe_surface *surface)
-{
-   return (struct tegra_surface *)surface;
-}
-
-static inline struct pipe_surface *
-tegra_surface_unwrap(struct pipe_surface *surface)
-{
-   if (!surface)
-      return NULL;
-
-   return to_tegra_surface(surface)->gpu;
-}
-
 #endif /* TEGRA_RESOURCE_H */
