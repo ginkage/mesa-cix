@@ -191,6 +191,7 @@ nv50_miptree_get_handle(struct pipe_screen *pscreen,
       return false;
 
    stride = mt->level[0].pitch;
+   whandle->offset = mt->base.offset;
 
    return nouveau_screen_bo_get_handle(pscreen,
                                        mt->base.bo,
@@ -403,6 +404,7 @@ nv50_miptree_from_handle(struct pipe_screen *pscreen,
 {
    struct nv50_miptree *mt;
    unsigned stride;
+   struct winsys_handle handle;
 
    /* only supports 2D, non-mipmapped textures for the moment */
    if ((templ->target != PIPE_TEXTURE_2D &&
@@ -416,13 +418,18 @@ nv50_miptree_from_handle(struct pipe_screen *pscreen,
    if (!mt)
       return NULL;
 
-   mt->base.bo = nouveau_screen_bo_from_handle(pscreen, whandle, &stride);
+   /* The BO import itself has no offset; it belongs to the plane resource. */
+   handle = *whandle;
+   handle.offset = 0;
+   mt->base.bo = nouveau_screen_bo_from_handle(pscreen, &handle, &stride);
    if (mt->base.bo == NULL) {
       FREE(mt);
       return NULL;
    }
    mt->base.domain = mt->base.bo->flags & NOUVEAU_BO_APER;
-   mt->base.address = mt->base.bo->offset;
+   /* Imported dma-buf planes can begin at a non-zero BO offset. */
+   mt->base.offset = whandle->offset;
+   mt->base.address = mt->base.bo->offset + whandle->offset;
 
    mt->base.base = *templ;
    pipe_reference_init(&mt->base.base.reference, 1);
