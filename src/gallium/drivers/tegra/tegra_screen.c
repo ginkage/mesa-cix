@@ -324,6 +324,10 @@ tegra_screen_resource_destroy(struct pipe_screen *pscreen,
                               struct pipe_resource *presource)
 {
    struct tegra_resource *resource = to_tegra_resource(presource);
+   struct tegra_screen *screen = to_tegra_screen(pscreen);
+
+   if (resource->handle)
+      drmCloseBufferHandle(screen->fd, resource->handle);
 
    pipe_resource_reference(&resource->gpu, NULL);
    free(resource);
