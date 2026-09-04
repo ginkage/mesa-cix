@@ -31,7 +31,6 @@ struct winsys_handle;
 struct tegra_resource {
    struct pipe_resource base;
    struct pipe_resource *gpu;
-   unsigned int refcount;
 
    uint64_t modifier;
    uint32_t stride;

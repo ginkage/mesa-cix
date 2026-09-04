@@ -559,22 +559,10 @@ tegra_set_sampler_views(struct pipe_context *pcontext, mesa_shader_stage shader,
 {
    struct pipe_sampler_view *views[PIPE_MAX_SHADER_SAMPLER_VIEWS];
    struct tegra_context *context = to_tegra_context(pcontext);
-   struct tegra_sampler_view *view;
    unsigned i;
 
-   for (i = 0; i < num_views; i++) {
-      /* adjust private reference count */
-      view = to_tegra_sampler_view(pviews[i]);
-      if (view) {
-         view->refcount--;
-         if (!view->refcount) {
-            view->refcount = 100000000;
-            p_atomic_add(&view->gpu->reference.count, view->refcount);
-         }
-      }
-
+   for (i = 0; i < num_views; i++)
       views[i] = tegra_sampler_view_unwrap(pviews[i]);
-   }
 
    context->gpu->set_sampler_views(context->gpu, shader, start_slot,
                                    num_views, unbind_num_trailing_slots,
@@ -886,10 +874,6 @@ tegra_create_sampler_view(struct pipe_context *pcontext,
    view->gpu = context->gpu->create_sampler_view(context->gpu, resource->gpu,
                                                  template);
 
-   /* use private reference count */
-   view->gpu->reference.count += 100000000;
-   view->refcount = 100000000;
-
    return &view->base;
 }
 
@@ -900,8 +884,6 @@ tegra_sampler_view_destroy(struct pipe_context *pcontext,
    struct tegra_sampler_view *view = to_tegra_sampler_view(pview);
 
    pipe_resource_reference(&view->base.texture, NULL);
-   /* adjust private reference count */
-   p_atomic_add(&view->gpu->reference.count, -view->refcount);
    pipe_sampler_view_reference(&view->gpu, NULL);
    free(view);
 }
