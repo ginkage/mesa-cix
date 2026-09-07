@@ -317,16 +317,27 @@ nouveau_object_mclass(struct nouveau_object *obj, const struct nouveau_mclass *m
    return -ENODEV;
 }
 
+/* bounded free list of recycled buffer objects, see nouveau_bo_cache_get() */
+#define NOUVEAU_BO_CACHE_ENTRIES 64
+#define NOUVEAU_BO_CACHE_MAX_SIZE (1 << 20)
+#define NOUVEAU_BO_CACHE_MAX_BYTES (8 << 20)
+
 struct nouveau_device_priv {
    struct nouveau_device base;
    simple_mtx_t lock;
    struct list_head bo_list;
    int gart_limit_percent;
    int vram_limit_percent;
+   simple_mtx_t bo_cache_lock;
+   struct nouveau_bo *bo_cache[NOUVEAU_BO_CACHE_ENTRIES];
+   unsigned bo_cache_nr;
+   uint64_t bo_cache_bytes;
 
    /* written by every ordered submit, so that the kernel orders them */
    struct nouveau_bo *order_bo;
 };
+
+static void nouveau_bo_cache_fini(struct nouveau_device_priv *nvdev);
 
 static inline struct nouveau_device_priv *
 nouveau_device(struct nouveau_device *dev)
@@ -475,6 +486,7 @@ nouveau_device_new(struct nouveau_object *parent, struct nouveau_device **pdev)
    nvdev->base.gart_limit = (nvdev->base.gart_size * nvdev->gart_limit_percent) / 100;
 
    simple_mtx_init(&nvdev->lock, mtx_plain);
+   simple_mtx_init(&nvdev->bo_cache_lock, mtx_plain);
    list_inithead(&nvdev->bo_list);
 done:
    if (ret)
@@ -503,6 +515,8 @@ nouveau_device_del(struct nouveau_device **pdev)
       return;
 
    nouveau_bo_ref(NULL, &nvdev->order_bo);
+   nouveau_bo_cache_fini(nvdev);
+   simple_mtx_destroy(&nvdev->bo_cache_lock);
    simple_mtx_destroy(&nvdev->lock);
    free(nvdev);
    *pdev = NULL;
@@ -565,6 +579,11 @@ struct nouveau_bo_priv {
    uint64_t map_handle;
    uint32_t name;
    uint32_t access;
+   /* what nouveau_bo_new() was asked for; not bo->size, which is page-rounded */
+   uint64_t alloc_size;
+   uint32_t alloc_flags;
+   uint32_t alloc_align;
+   bool cacheable;
 };
 
 static inline struct nouveau_bo_priv *
@@ -671,14 +690,111 @@ nouveau_bo_wrap_locked(struct nouveau_device *dev, uint32_t handle,
    return -ENOMEM;
 }
 
+static bool
+nouveau_bo_cache_get(struct nouveau_device_priv *nvdev, uint32_t flags,
+                     uint32_t align, uint64_t size, union nouveau_bo_config *config,
+                     struct nouveau_bo **pbo)
+{
+   struct nouveau_bo *bo = NULL;
+
+   if (config || size > NOUVEAU_BO_CACHE_MAX_SIZE)
+      return false;
+
+   simple_mtx_lock(&nvdev->bo_cache_lock);
+   for (unsigned i = 0; i < nvdev->bo_cache_nr; i++) {
+      struct nouveau_bo_priv *nvbo = nouveau_bo(nvdev->bo_cache[i]);
+
+      if (nvbo->alloc_flags != flags || nvbo->alloc_align != align ||
+          nvbo->alloc_size != size)
+         continue;
+
+      bo = nvdev->bo_cache[i];
+      nvdev->bo_cache[i] = nvdev->bo_cache[--nvdev->bo_cache_nr];
+      nvdev->bo_cache_bytes -= bo->size;
+      break;
+   }
+   simple_mtx_unlock(&nvdev->bo_cache_lock);
+
+   if (!bo)
+      return false;
+
+   /* the previous life's access flags must not short-circuit the first
+    * nouveau_bo_wait() on the recycled object */
+   p_atomic_set(&nouveau_bo(bo)->refcnt, 1);
+   nouveau_bo(bo)->access = NOUVEAU_BO_WR;
+
+   *pbo = bo;
+   return true;
+}
+
+static bool
+nouveau_bo_cache_put(struct nouveau_device_priv *nvdev, struct nouveau_bo *bo)
+{
+   struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+   struct nouveau_bo_priv *nvbo = nouveau_bo(bo);
+   bool kept = false;
+
+   /* named or imported objects are shared, and live on nvdev->bo_list */
+   if (!nvbo->cacheable || nvbo->name || nvbo->head.next)
+      return false;
+
+   simple_mtx_lock(&nvdev->bo_cache_lock);
+
+   /* evict from the front rather than refuse the insert */
+   while (nvdev->bo_cache_nr &&
+          (nvdev->bo_cache_nr >= NOUVEAU_BO_CACHE_ENTRIES ||
+           nvdev->bo_cache_bytes + bo->size > NOUVEAU_BO_CACHE_MAX_BYTES)) {
+      struct nouveau_bo *old = nvdev->bo_cache[0];
+      memmove(&nvdev->bo_cache[0], &nvdev->bo_cache[1],
+              (nvdev->bo_cache_nr - 1) * sizeof(nvdev->bo_cache[0]));
+      nvdev->bo_cache_nr--;
+      nvdev->bo_cache_bytes -= old->size;
+      drmCloseBufferHandle(drm->fd, old->handle);
+      free(nouveau_bo(old));
+   }
+
+   if (nvdev->bo_cache_nr < NOUVEAU_BO_CACHE_ENTRIES &&
+       nvdev->bo_cache_bytes + bo->size <= NOUVEAU_BO_CACHE_MAX_BYTES) {
+      if (bo->map) {
+         os_munmap(bo->map, bo->size);
+         bo->map = NULL;
+      }
+      nvdev->bo_cache[nvdev->bo_cache_nr++] = bo;
+      nvdev->bo_cache_bytes += bo->size;
+      kept = true;
+   }
+   simple_mtx_unlock(&nvdev->bo_cache_lock);
+
+   return kept;
+}
+
+static void
+nouveau_bo_cache_fini(struct nouveau_device_priv *nvdev)
+{
+   struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+
+   simple_mtx_lock(&nvdev->bo_cache_lock);
+   while (nvdev->bo_cache_nr) {
+      struct nouveau_bo *bo = nvdev->bo_cache[--nvdev->bo_cache_nr];
+      drmCloseBufferHandle(drm->fd, bo->handle);
+      free(nouveau_bo(bo));
+   }
+   nvdev->bo_cache_bytes = 0;
+   simple_mtx_unlock(&nvdev->bo_cache_lock);
+}
+
 int
 nouveau_bo_new(struct nouveau_device *dev, uint32_t flags, uint32_t align, uint64_t size,
                union nouveau_bo_config *config, struct nouveau_bo **pbo)
 {
    struct nouveau_drm *drm = nouveau_drm(&dev->object);
+   struct nouveau_device_priv *nvdev = nouveau_device(dev);
    struct drm_nouveau_gem_new req = {};
    struct drm_nouveau_gem_info *info = &req.info;
    int ret;
+
+   if (nouveau_bo_cache_get(nvdev, flags, align, size, config, pbo))
+      return 0;
 
    struct nouveau_bo_priv *nvbo = calloc(1, sizeof(*nvbo));
    if (!nvbo)
@@ -729,6 +845,11 @@ nouveau_bo_new(struct nouveau_device *dev, uint32_t flags, uint32_t align, uint6
 
    bo_info(bo, info);
 
+   nvbo->alloc_size = size;
+   nvbo->alloc_flags = flags;
+   nvbo->alloc_align = align;
+   nvbo->cacheable = !config && size <= NOUVEAU_BO_CACHE_MAX_SIZE;
+
    *pbo = bo;
    return 0;
 }
@@ -739,6 +860,9 @@ nouveau_bo_del(struct nouveau_bo *bo)
    struct nouveau_drm *drm = nouveau_drm(&bo->device->object);
    struct nouveau_device_priv *nvdev = nouveau_device(bo->device);
    struct nouveau_bo_priv *nvbo = nouveau_bo(bo);
+
+   if (nouveau_bo_cache_put(nvdev, bo))
+      return;
 
    if (nvbo->head.next) {
       simple_mtx_lock(&nvdev->lock);
