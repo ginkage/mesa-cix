@@ -1616,7 +1616,8 @@ nouveau_pushbuf_new(struct nouveau_client *client, struct nouveau_object *chan, 
       push->flags |= NOUVEAU_BO_VRAM;
       nvpb->type   = NOUVEAU_BO_VRAM;
    }
-   nvpb->type |= NOUVEAU_BO_MAP;
+   /* write-only streaming memory, never read back except by pushbuf_dump() */
+   nvpb->type |= NOUVEAU_BO_MAP | NOUVEAU_BO_COHERENT;
 
    for (nvpb->bo_nr = 0; nvpb->bo_nr < nr; nvpb->bo_nr++) {
       ret = nouveau_bo_new(client->device, nvpb->type, 0, size, NULL, &nvpb->bos[nvpb->bo_nr]);
