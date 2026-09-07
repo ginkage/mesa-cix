@@ -204,6 +204,7 @@ nvc0_compute_validate_constbufs(struct nvc0_context *nvc0)
             BEGIN_NVC0(push, NVC0_CP(CB_BIND), 1);
             PUSH_DATA (push, (i << 8) | 1);
 
+            nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_CB(i));
             BCTX_REFN(nvc0->bufctx_cp, CP_CB(i), res, RD);
 
             res->cb_bindings[s] |= 1 << i;
@@ -246,6 +247,8 @@ nvc0_compute_validate_buffers(struct nvc0_context *nvc0)
    const int s = 5;
    int i;
 
+   nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_BUF);
+
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
    PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
@@ -279,6 +282,8 @@ void
 nvc0_compute_validate_globals(struct nvc0_context *nvc0)
 {
    unsigned i;
+
+   nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_GLOBAL);
 
    for (i = 0; i < nvc0->global_residents.size / sizeof(struct pipe_resource *);
         ++i) {

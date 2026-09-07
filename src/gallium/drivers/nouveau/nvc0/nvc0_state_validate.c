@@ -559,6 +559,7 @@ nvc0_constbufs_validate(struct nvc0_context *nvc0)
                                       nvc0->constbuf[s][i].size,
                                       res->address + nvc0->constbuf[s][i].offset);
 
+               nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_CB(s, i));
                BCTX_REFN(nvc0->bufctx_3d, 3D_CB(s, i), res, RD);
 
                nvc0->cb_dirty = 1; /* Force cache flush for UBO. */
@@ -587,6 +588,8 @@ nvc0_validate_buffers(struct nvc0_context *nvc0)
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_screen *screen = nvc0->screen;
    int i, s;
+
+   nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_BUF);
 
    for (s = 0; s < 5; s++) {
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);

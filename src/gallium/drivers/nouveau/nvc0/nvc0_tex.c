@@ -521,10 +521,13 @@ nvc0_validate_tic(struct nvc0_context *nvc0, int s)
          continue;
       commands[n++] = (tic->id << 9) | (i << 1) | 1;
 
-      if (unlikely(s == 5))
+      if (unlikely(s == 5)) {
+         nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_TEX(i));
          BCTX_REFN(nvc0->bufctx_cp, CP_TEX(i), res, RD);
-      else
+      } else {
+         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
          BCTX_REFN(nvc0->bufctx_3d, 3D_TEX(s, i), res, RD);
+      }
    }
    for (; i < nvc0->state.num_textures[s]; ++i)
       commands[n++] = (i << 1) | 0;
@@ -581,8 +584,10 @@ nve4_validate_tic(struct nvc0_context *nvc0, unsigned s)
 
       nvc0->tex_handles[s][i] &= ~NVE4_TIC_ENTRY_INVALID;
       nvc0->tex_handles[s][i] |= tic->id;
-      if (dirty)
+      if (dirty) {
+         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
          BCTX_REFN(nvc0->bufctx_3d, 3D_TEX(s, i), res, RD);
+      }
    }
    for (; i < nvc0->state.num_textures[s]; ++i) {
       nvc0->tex_handles[s][i] |= NVE4_TIC_ENTRY_INVALID;
@@ -1133,6 +1138,11 @@ nvc0_validate_suf(struct nvc0_context *nvc0, int s)
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_screen *screen = nvc0->screen;
 
+   if (s == 5)
+      nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_SUF);
+   else
+      nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_SUF);
+
    for (int i = 0; i < NVC0_MAX_IMAGES; ++i) {
       struct pipe_image_view *view = &nvc0->images[s][i];
       int width = 0, height = 0, depth = 0;
@@ -1296,6 +1306,8 @@ nve4_update_surface_bindings(struct nvc0_context *nvc0)
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_screen *screen = nvc0->screen;
    int i, j, s;
+
+   nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_SUF);
 
    for (s = 0; s < 5; s++) {
       if (!nvc0->images_dirty[s])
