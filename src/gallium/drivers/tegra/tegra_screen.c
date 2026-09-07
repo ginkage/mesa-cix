@@ -170,12 +170,16 @@ tegra_screen_resource_create(struct pipe_screen *pscreen,
 {
    struct tegra_screen *screen = to_tegra_screen(pscreen);
    uint64_t modifier = DRM_FORMAT_MOD_INVALID;
+   struct pipe_resource tmpl = *template;
    struct tegra_resource *resource;
    int err;
 
    resource = calloc(1, sizeof(*resource));
    if (!resource)
       return NULL;
+
+   /* the wrapper owns the plane chain */
+   tmpl.next = NULL;
 
    /*
     * Applications that create scanout resources without modifiers are very
@@ -192,7 +196,7 @@ tegra_screen_resource_create(struct pipe_screen *pscreen,
       modifier = DRM_FORMAT_MOD_LINEAR;
 
    resource->gpu = screen->gpu->resource_create_with_modifiers(screen->gpu,
-                                                               template,
+                                                               &tmpl,
                                                                &modifier, 1);
    if (!resource->gpu)
       goto free;
@@ -207,6 +211,7 @@ tegra_screen_resource_create(struct pipe_screen *pscreen,
    memcpy(&resource->base, resource->gpu, sizeof(*resource->gpu));
    pipe_reference_init(&resource->base.reference, 1);
    resource->base.screen = &screen->base;
+   resource->base.next = template->next;
 
    return &resource->base;
 
@@ -241,13 +246,17 @@ tegra_screen_resource_from_handle(struct pipe_screen *pscreen,
                                   unsigned usage)
 {
    struct tegra_screen *screen = to_tegra_screen(pscreen);
+   struct pipe_resource tmpl = *template;
    struct tegra_resource *resource;
 
    resource = calloc(1, sizeof(*resource));
    if (!resource)
       return NULL;
 
-   resource->gpu = screen->gpu->resource_from_handle(screen->gpu, template,
+   /* the wrapper owns the plane chain */
+   tmpl.next = NULL;
+
+   resource->gpu = screen->gpu->resource_from_handle(screen->gpu, &tmpl,
                                                      handle, usage);
    if (!resource->gpu) {
       free(resource);
@@ -257,6 +266,7 @@ tegra_screen_resource_from_handle(struct pipe_screen *pscreen,
    memcpy(&resource->base, resource->gpu, sizeof(*resource->gpu));
    pipe_reference_init(&resource->base.reference, 1);
    resource->base.screen = &screen->base;
+   resource->base.next = template->next;
 
    return &resource->base;
 }
@@ -434,6 +444,9 @@ tegra_screen_resource_create_with_modifiers(struct pipe_screen *pscreen,
     */
    tmpl.bind |= PIPE_BIND_SCANOUT;
 
+   /* the wrapper owns the plane chain */
+   tmpl.next = NULL;
+
    resource->gpu = screen->gpu->resource_create_with_modifiers(screen->gpu,
                                                                &tmpl,
                                                                modifiers,
@@ -448,6 +461,7 @@ tegra_screen_resource_create_with_modifiers(struct pipe_screen *pscreen,
    memcpy(&resource->base, resource->gpu, sizeof(*resource->gpu));
    pipe_reference_init(&resource->base.reference, 1);
    resource->base.screen = &screen->base;
+   resource->base.next = template->next;
 
    return &resource->base;
 
