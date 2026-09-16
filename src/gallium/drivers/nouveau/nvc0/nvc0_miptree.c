@@ -154,11 +154,9 @@ nvc0_choose_tiled_storage_type(struct pipe_screen *pscreen,
          }
          break;
       case 32:
-         if (compressed && ms) {
+         if (compressed) {
             switch (ms) {
-               /* This one makes things blurry:
             case 0: tile_flags = 0xdb; break;
-               */
             case 1: tile_flags = 0xdd; break;
             case 2: tile_flags = 0xdf; break;
             case 3: tile_flags = 0xe4; break;
