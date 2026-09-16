@@ -195,9 +195,15 @@ tegra_screen_resource_create(struct pipe_screen *pscreen,
    if (template->bind & PIPE_BIND_SCANOUT)
       modifier = DRM_FORMAT_MOD_LINEAR;
 
-   resource->gpu = screen->gpu->resource_create_with_modifiers(screen->gpu,
-                                                               &tmpl,
-                                                               &modifier, 1);
+   /* A modifier describes a layout that can be shared, which rules out
+    * compression. Only ask for one when the resource can leave the driver.
+    */
+   if (template->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED))
+      resource->gpu = screen->gpu->resource_create_with_modifiers(screen->gpu,
+                                                                  &tmpl,
+                                                                  &modifier, 1);
+   else
+      resource->gpu = screen->gpu->resource_create(screen->gpu, &tmpl);
    if (!resource->gpu)
       goto free;
 
