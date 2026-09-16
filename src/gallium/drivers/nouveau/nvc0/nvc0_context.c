@@ -88,6 +88,7 @@ nvc0_flush(struct pipe_context *pipe,
                         nvc0->base.screen);
 
    PUSH_KICK(nvc0->base.pushbuf); /* fencing handled in kick_notify */
+   nvc0->draw_kicked = false;
 
    nouveau_context_update_frame_stats(&nvc0->base);
 }

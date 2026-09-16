@@ -963,8 +963,6 @@ nvc0_draw_single_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
                  nvc0->seamless_cube_map ? NVC0_3D_TEX_MISC_SEAMLESS_CUBE_MAP : 0);
    }
 
-   nvc0->base.kick_notify = nvc0_same_fence_kick_notify;
-
    for (s = 0; s < 5 && !nvc0->cb_dirty; ++s) {
       if (nvc0->constbuf_coherent[s])
          nvc0->cb_dirty = true;
@@ -1167,6 +1165,7 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
    BCTX_REFN_bo(nvc0->bufctx_3d, 3D_TEXT, vram_domain | NOUVEAU_BO_RD,
                 nvc0->text);
 
+   nvc0->base.kick_notify = nvc0_same_fence_kick_notify;
    nvc0_state_validate_3d(nvc0, ~0);
 
    for (unsigned i = 0; i < num_draws; i++) {
@@ -1176,7 +1175,11 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
          drawid++;
    }
 
-   PUSH_KICK(push);
+   /* only the first draw after a flush goes out on its own */
+   if (!nvc0->draw_kicked) {
+      nvc0->draw_kicked = true;
+      PUSH_KICK(push);
+   }
 
    nvc0->base.kick_notify = nvc0_default_kick_notify;
 

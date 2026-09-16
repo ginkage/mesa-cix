@@ -707,7 +707,7 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
 
    /* don't need NEW_BLEND, COLOR_MASK doesn't affect CLEAR_BUFFERS */
    if (!nvc0_state_validate_3d(nvc0, NVC0_NEW_3D_FRAMEBUFFER))
-      goto out;
+      return;
 
    if (scissor_state) {
       uint32_t minx = scissor_state->minx;
@@ -715,7 +715,7 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
       uint32_t miny = scissor_state->miny;
       uint32_t maxy = MIN2(fb->height, scissor_state->maxy);
       if (maxx <= minx || maxy <= miny)
-         goto out;
+         return;
 
       BEGIN_NVC0(push, NVC0_3D(SCREEN_SCISSOR_HORIZ), 2);
       PUSH_DATA (push, minx | (maxx - minx) << 16);
@@ -786,9 +786,6 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
       PUSH_DATA (push, fb->width << 16);
       PUSH_DATA (push, fb->height << 16);
    }
-
-out:
-   PUSH_KICK(push);
 }
 
 static void

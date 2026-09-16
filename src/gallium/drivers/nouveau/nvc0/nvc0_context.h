@@ -303,6 +303,7 @@ struct nvc0_context {
    uint8_t patch_vertices;
 
    bool vbo_push_hint;
+   bool draw_kicked; /* a draw was submitted since the last flush */
 
    uint8_t tfbbuf_dirty;
    struct pipe_stream_output_target *tfbbuf[4];
