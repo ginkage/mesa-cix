@@ -987,6 +987,10 @@ nvc0_screen_create(struct nouveau_device *dev)
    BEGIN_NVC0(push, NVC0_3D(RT_CONTROL), 1);
    PUSH_DATA (push, 1);
 
+   /* SET_REDUCE_COLOR_THRESHOLDS_ENABLE, lossy and on in the golden context */
+   BEGIN_NVC0(push, SUBC_3D(0x0d9c), 1);
+   PUSH_DATA (push, 0);
+
    BEGIN_NVC0(push, NVC0_3D(CSAA_ENABLE), 1);
    PUSH_DATA (push, 0);
    BEGIN_NVC0(push, NVC0_3D(MULTISAMPLE_ENABLE), 1);
