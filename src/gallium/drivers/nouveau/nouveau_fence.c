@@ -432,6 +432,16 @@ nouveau_fence_wait(struct nouveau_fence *fence, struct util_debug_callback *debu
 }
 
 bool
+nouveau_fence_flush(struct nouveau_fence *fence)
+{
+   struct nouveau_fence_list *fence_list = &fence->screen->fence;
+   simple_mtx_lock(&fence_list->lock);
+   bool res = nouveau_fence_kick(fence);
+   simple_mtx_unlock(&fence_list->lock);
+   return res;
+}
+
+bool
 nouveau_fence_next_if_current(struct nouveau_context *nv, struct nouveau_fence *fence)
 {
    bool result = true;

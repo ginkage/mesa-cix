@@ -1377,7 +1377,11 @@ pushbuf_flush(struct nouveau_pushbuf *push)
    struct drm_nouveau_gem_pushbuf_bo *kref;
    int i;
 
-   int ret = pushbuf_submit(push, push->channel);
+   /* kick_notify() emits a fence, and that alone makes the push list
+    * non-empty, so an otherwise empty kick still costs a GEM_PUSHBUF. */
+   bool empty = push->cur == nvpb->bgn && !krec->nr_push && nvpb->list == krec;
+
+   int ret = empty ? 0 : pushbuf_submit(push, push->channel);
 
    kref = krec->buffer;
    for (i = 0; i < krec->nr_buffer; i++, kref++) {

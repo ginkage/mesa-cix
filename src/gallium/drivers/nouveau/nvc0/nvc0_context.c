@@ -90,6 +90,11 @@ nvc0_flush(struct pipe_context *pipe,
    PUSH_KICK(nvc0->base.pushbuf); /* fencing handled in kick_notify */
    nvc0->draw_kicked = false;
 
+   /* an empty kick skips kick_notify(), which would leave the fence to
+    * whatever is submitted next */
+   if (fence && *fence)
+      nouveau_fence_flush(nouveau_fence(*fence));
+
    nouveau_context_update_frame_stats(&nvc0->base);
 }
 
