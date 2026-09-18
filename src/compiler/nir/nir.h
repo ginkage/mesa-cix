@@ -7270,6 +7270,8 @@ bool nir_opt_shrink_vectors(nir_shader *shader, bool shrink_start);
 
 bool nir_opt_undef(nir_shader *shader);
 
+bool nir_opt_undistribute_select(nir_shader *shader);
+
 typedef bool (*nir_lower_undef_to_zero_filter)(nir_undef_instr *);
 bool nir_lower_undef_to_zero(nir_shader *shader,
                              nir_lower_undef_to_zero_filter filter);
