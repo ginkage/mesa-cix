@@ -3339,6 +3339,8 @@ Converter::runOptLoop()
       NIR_PASS(progress, nir, nir_opt_loop);
       NIR_PASS(progress, nir, nir_opt_cse);
       NIR_PASS(progress, nir, nir_opt_algebraic);
+      /* after nir_opt_algebraic: that is where ffract() is lowered */
+      NIR_PASS(progress, nir, nir_opt_undistribute_select);
       NIR_PASS(progress, nir, nir_opt_constant_folding);
       NIR_PASS(progress, nir, nir_opt_copy_prop);
       NIR_PASS(progress, nir, nir_opt_dce);
