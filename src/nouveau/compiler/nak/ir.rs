@@ -2507,6 +2507,10 @@ impl LdCacheOp {
                 MemOrder::Strong(MemScope::System) => {
                     LdCacheOp::CacheInvalidate
                 }
+                MemOrder::Strong(MemScope::GPU) => {
+                    // The L1s are not coherent with each other.
+                    LdCacheOp::CacheGlobal
+                }
                 _ => {
                     // From the CUDA 10.2 docs:
                     //
@@ -2527,8 +2531,9 @@ impl LdCacheOp {
                     //    Read-Only Data Cache)."
                     //
                     // We follow suit and use CacheGlobal for all global memory
-                    // access on Kepler.  On Maxwell, it appears safe to use
-                    // CacheAll for everything.
+                    // access on Kepler.  On Maxwell, CacheAll is safe for
+                    // everything that is left here: a CTA lives on one SM,
+                    // so its L1 is coherent with itself.
                     if sm.sm() >= 50 {
                         LdCacheOp::CacheAll
                     } else {
