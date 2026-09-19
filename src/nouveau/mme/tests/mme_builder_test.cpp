@@ -205,6 +205,26 @@ static const uint32_t mul_cases[] = {
    0xfffe0000,
 };
 
+/* Returns the mask of free registers, each left holding a distinct value */
+static uint32_t
+dirty_free_regs(mme_builder *b)
+{
+   std::vector<mme_value> regs;
+   uint32_t dirty = 0;
+
+   while (b->reg_alloc.alloc != b->reg_alloc.exists) {
+      mme_value r = mme_alloc_reg(b);
+      mme_mov_to(b, r, mme_imm(0x1000 * r.reg + 0x5a));
+      regs.push_back(r);
+      dirty |= BITFIELD_BIT(r.reg);
+   }
+
+   for (auto r : regs)
+      mme_free_reg(b, r);
+
+   return dirty;
+}
+
 TEST_F(mme_builder_test, mul_32x32_32)
 {
    for (auto sim : sims) {
@@ -214,7 +234,11 @@ TEST_F(mme_builder_test, mul_32x32_32)
       mme_value x = mme_load(&b);
       mme_value y = mme_load(&b);
 
-      sim->mme_store_data(&b, 0, mme_mul_32x32_32_free_srcs(&b, x, y));
+      uint32_t dirty = dirty_free_regs(&b);
+      mme_value d = mme_mul_32x32_32_free_srcs(&b, x, y);
+      ASSERT_TRUE(dirty & BITFIELD_BIT(d.reg));
+
+      sim->mme_store_data(&b, 0, d);
 
       auto macro = mme_builder_finish_vec(&b);
 
@@ -240,7 +264,10 @@ TEST_F(mme_builder_test, umul_32x32_64)
       mme_value x = mme_load(&b);
       mme_value y = mme_load(&b);
 
+      uint32_t dirty = dirty_free_regs(&b);
       struct mme_value64 d = mme_umul_32x32_64_free_srcs(&b, x, y);
+      ASSERT_TRUE(dirty & BITFIELD_BIT(d.lo.reg));
+      ASSERT_TRUE(dirty & BITFIELD_BIT(d.hi.reg));
 
       sim->mme_store_data(&b, 0, d.lo);
       sim->mme_store_data(&b, 1, d.hi);
@@ -274,7 +301,10 @@ TEST_F(mme_builder_test, umul_32x64_64)
       y.lo = mme_load(&b);
       y.hi = mme_load(&b);
 
+      uint32_t dirty = dirty_free_regs(&b);
       struct mme_value64 d = mme_umul_32x64_64_free_srcs(&b, x, y);
+      ASSERT_TRUE(dirty & BITFIELD_BIT(d.lo.reg));
+      ASSERT_TRUE(dirty & BITFIELD_BIT(d.hi.reg));
 
       sim->mme_store_data(&b, 0, d.lo);
       sim->mme_store_data(&b, 1, d.hi);
