@@ -282,6 +282,23 @@ nvkmd_nouveau_exec_ctx_sync(struct nvkmd_ctx *_ctx,
    return VK_SUCCESS;
 }
 
+static bool
+nvkmd_nouveau_exec_ctx_set_zbc_color(struct nvkmd_ctx *_ctx, uint8_t format,
+                                     const uint32_t ds[4])
+{
+   struct nvkmd_nouveau_exec_ctx *ctx = nvkmd_nouveau_exec_ctx(_ctx);
+
+   return nouveau_ws_context_zbc_color(ctx->ws_ctx, format, ds) == 0;
+}
+
+static bool
+nvkmd_nouveau_exec_ctx_set_zbc_depth(struct nvkmd_ctx *_ctx, uint32_t depth)
+{
+   struct nvkmd_nouveau_exec_ctx *ctx = nvkmd_nouveau_exec_ctx(_ctx);
+
+   return nouveau_ws_context_zbc_depth(ctx->ws_ctx, depth) == 0;
+}
+
 const struct nvkmd_ctx_ops nvkmd_nouveau_exec_ctx_ops = {
    .destroy = nvkmd_nouveau_exec_ctx_destroy,
    .wait = nvkmd_nouveau_exec_ctx_wait,
@@ -289,6 +306,8 @@ const struct nvkmd_ctx_ops nvkmd_nouveau_exec_ctx_ops = {
    .signal = nvkmd_nouveau_exec_ctx_signal,
    .flush = nvkmd_nouveau_exec_ctx_flush,
    .sync = nvkmd_nouveau_exec_ctx_sync,
+   .set_zbc_color = nvkmd_nouveau_exec_ctx_set_zbc_color,
+   .set_zbc_depth = nvkmd_nouveau_exec_ctx_set_zbc_depth,
 };
 
 static VkResult

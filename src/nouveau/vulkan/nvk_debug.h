@@ -45,6 +45,9 @@ enum nvk_debug {
 
    /* Disable image compression */
    NVK_DEBUG_NO_COMPRESSION = 1ull << 9,
+
+   /* Do not add clear values to the zero-bandwidth clear table */
+   NVK_DEBUG_NO_ZBC = 1ull << 10,
 };
 
 enum nvk_experimental {

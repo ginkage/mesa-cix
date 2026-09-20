@@ -3,9 +3,11 @@
 #include "nouveau_device.h"
 
 #include "drm-uapi/nouveau_drm.h"
+#include "nvif/cl9097.h"
 #include "nvif/ioctl.h"
 
 #include <errno.h>
+#include <string.h>
 #include <xf86drm.h>
 
 static void
@@ -110,6 +112,68 @@ nouveau_ws_subchan_alloc(int fd, int channel, uint32_t handle, uint16_t oclass, 
    obj->cls = oclass;
 
    return drmCommandWrite(fd, DRM_NOUVEAU_NVIF, &args, sizeof(args));
+}
+
+int
+nouveau_ws_context_zbc_color(struct nouveau_ws_context *ctx, uint8_t format,
+                             const uint32_t ds[4])
+{
+   struct {
+      struct nvif_ioctl_v0 ioctl;
+      struct nvif_ioctl_mthd_v0 mthd;
+      struct fermi_a_zbc_color_v1 zbc;
+   } args = {
+      .ioctl = {
+         .object = (uintptr_t)&ctx->eng3d,
+         .owner = NVIF_IOCTL_V0_OWNER_ANY,
+         .route = 0x00,
+         .type = NVIF_IOCTL_V0_MTHD,
+         .version = 0,
+      },
+      .mthd = {
+         .method = FERMI_A_ZBC_COLOR,
+         .version = 0,
+      },
+      .zbc = {
+         .version = 1,
+         .format = format,
+      },
+   };
+
+   memcpy(args.zbc.ds, ds, sizeof(args.zbc.ds));
+
+   return drmCommandWriteRead(ctx->dev->fd, DRM_NOUVEAU_NVIF,
+                              &args, sizeof(args));
+}
+
+int
+nouveau_ws_context_zbc_depth(struct nouveau_ws_context *ctx, uint32_t depth)
+{
+   struct {
+      struct nvif_ioctl_v0 ioctl;
+      struct nvif_ioctl_mthd_v0 mthd;
+      struct fermi_a_zbc_depth_v1 zbc;
+   } args = {
+      .ioctl = {
+         .object = (uintptr_t)&ctx->eng3d,
+         .owner = NVIF_IOCTL_V0_OWNER_ANY,
+         .route = 0x00,
+         .type = NVIF_IOCTL_V0_MTHD,
+         .version = 0,
+      },
+      .mthd = {
+         .method = FERMI_A_ZBC_DEPTH,
+         .version = 0,
+      },
+      .zbc = {
+         .version = 1,
+         .format = FERMI_A_ZBC_DEPTH_V0_FMT_FP32,
+         .ds = depth,
+      },
+   };
+
+   return drmCommandWriteRead(ctx->dev->fd, DRM_NOUVEAU_NVIF,
+                              &args, sizeof(args));
 }
 
 static void

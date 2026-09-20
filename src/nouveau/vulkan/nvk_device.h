@@ -43,6 +43,29 @@ nvk_slm_area_get_mem_ref(struct nvk_slm_area *area,
                          uint32_t *bytes_per_warp_out,
                          uint32_t *bytes_per_mp_out);
 
+/* Zero-bandwidth clear table, see nvk_cmd_clear.c */
+#define NVK_ZBC_MAX_ENTRIES 16
+
+struct nvk_zbc_color {
+   uint8_t format;
+   uint32_t ds[4];
+};
+
+struct nvk_zbc_table {
+   simple_mtx_t mutex;
+
+   struct nvk_zbc_color colors[NVK_ZBC_MAX_ENTRIES];
+   uint32_t color_count;
+   struct nvk_zbc_color color_seen;
+   bool colors_full;
+
+   uint32_t depths[NVK_ZBC_MAX_ENTRIES];
+   uint32_t depth_count;
+   uint32_t depth_seen;
+   bool depth_seen_valid;
+   bool depths_full;
+};
+
 struct nvk_device {
    struct vk_device vk;
 
@@ -59,6 +82,7 @@ struct nvk_device {
    struct nvk_heap event_heap;
    struct nvk_heap qmd_heap;
    struct nvk_slm_area slm;
+   struct nvk_zbc_table zbc;
    struct nvkmd_mem *vab_memory;
 
    struct u_printf_ctx printf;

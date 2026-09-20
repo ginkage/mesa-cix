@@ -178,6 +178,7 @@ nvk_include_directories = [
   fs.relative_to(meson.project_build_root(), meson.current_source_dir()),
   inc_include,
   inc_src,
+  inc_nouveau_drm,
 ]
 
 nvk_bindings_rs_gen = rust.bindgen(

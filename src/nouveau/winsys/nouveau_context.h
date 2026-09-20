@@ -43,6 +43,11 @@ struct nouveau_ws_context {
    struct nouveau_ws_object vdec;
 };
 
+/* the kernel derives each entry's L2 pattern from format and ds */
+int nouveau_ws_context_zbc_color(struct nouveau_ws_context *, uint8_t format,
+                                 const uint32_t ds[4]);
+int nouveau_ws_context_zbc_depth(struct nouveau_ws_context *, uint32_t depth);
+
 int nouveau_ws_context_create(struct nouveau_ws_device *,
                               enum nouveau_ws_engines engines,
                               struct nouveau_ws_context **out);

@@ -348,6 +348,11 @@ struct nvkmd_ctx_ops {
    /* Implies flush() */
    VkResult (*sync)(struct nvkmd_ctx *ctx,
                     struct vk_object_base *log_obj);
+
+   /* Add to the GPU-global ZBC table; false if full or unsupported */
+   bool (*set_zbc_color)(struct nvkmd_ctx *ctx, uint8_t format,
+                         const uint32_t ds[4]);
+   bool (*set_zbc_depth)(struct nvkmd_ctx *ctx, uint32_t depth);
 };
 
 struct nvkmd_ctx {
@@ -622,6 +627,21 @@ nvkmd_ctx_sync(struct nvkmd_ctx *ctx,
                struct vk_object_base *log_obj)
 {
    return ctx->ops->sync(ctx, log_obj);
+}
+
+static inline bool
+nvkmd_ctx_set_zbc_color(struct nvkmd_ctx *ctx, uint8_t format,
+                        const uint32_t ds[4])
+{
+   return ctx->ops->set_zbc_color &&
+          ctx->ops->set_zbc_color(ctx, format, ds);
+}
+
+static inline bool
+nvkmd_ctx_set_zbc_depth(struct nvkmd_ctx *ctx, uint32_t depth)
+{
+   return ctx->ops->set_zbc_depth &&
+          ctx->ops->set_zbc_depth(ctx, depth);
 }
 
 #endif /* NVKMD_H */

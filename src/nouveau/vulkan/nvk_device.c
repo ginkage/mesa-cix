@@ -356,6 +356,8 @@ nvk_CreateDevice(VkPhysicalDevice physicalDevice,
       }
 
       nvk_slm_area_init(&dev->slm);
+      memset(&dev->zbc, 0, sizeof(dev->zbc));
+      simple_mtx_init(&dev->zbc.mutex, mtx_plain);
 
       if (pdev->info.cls_eng3d >= FERMI_A &&
           pdev->info.cls_eng3d < MAXWELL_A) {
@@ -411,6 +413,7 @@ fail_queues:
    if (dev->vab_memory)
       nvkmd_mem_unref(dev->vab_memory);
 fail_slm:
+   simple_mtx_destroy(&dev->zbc.mutex);
    nvk_slm_area_finish(&dev->slm);
    if (pdev->info.cls_eng3d < MAXWELL_B)
       nvk_heap_finish(dev, &dev->qmd_heap);
@@ -470,6 +473,7 @@ nvk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       /* Idle the upload queue before we tear down heaps */
       nvk_upload_queue_sync(dev, &dev->upload);
 
+      simple_mtx_destroy(&dev->zbc.mutex);
       nvk_slm_area_finish(&dev->slm);
       if (pdev->info.cls_eng3d < MAXWELL_B)
          nvk_heap_finish(dev, &dev->qmd_heap);

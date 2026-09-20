@@ -12,10 +12,168 @@
 #include "nvk_mme.h"
 #include "nvk_physical_device.h"
 
+#include "nvk_queue.h"
+#include "nvkmd/nvkmd.h"
+
+#include "util/format/u_format.h"
 #include "vk_format.h"
 
+#include "nvif/cl9097.h"
 #include "nv_push_cl9097.h"
 #include "drf.h"
+
+/* Zero-bandwidth clear: the table is GPU-global and entries are never freed,
+ * so a value is only added once it has been cleared with twice in a row.
+ */
+
+static bool
+nvk_zbc_color_format(enum pipe_format format, uint8_t *fmt_out)
+{
+   switch (format) {
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_A8B8G8R8;
+      return true;
+   case PIPE_FORMAT_R8G8B8A8_SRGB:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_A8BL8GL8RL8;
+      return true;
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_A8R8G8B8;
+      return true;
+   case PIPE_FORMAT_B8G8R8A8_SRGB:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_A8RL8GL8BL8;
+      return true;
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_A2B10G10R10;
+      return true;
+   case PIPE_FORMAT_B10G10R10A2_UNORM:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_A2R10G10B10;
+      return true;
+   case PIPE_FORMAT_R11G11B10_FLOAT:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_BF10GF11RF11;
+      return true;
+   case PIPE_FORMAT_R16G16B16A16_FLOAT:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_RF16_GF16_BF16_AF16;
+      return true;
+   case PIPE_FORMAT_R32G32B32A32_FLOAT:
+      *fmt_out = FERMI_A_ZBC_COLOR_V0_FMT_RF32_GF32_BF32_AF32;
+      return true;
+   default:
+      return false;
+   }
+}
+
+static struct nvkmd_ctx *
+nvk_device_3d_ctx(struct nvk_device *dev)
+{
+   vk_foreach_queue(vk_queue, &dev->vk) {
+      struct nvk_queue *queue = container_of(vk_queue, struct nvk_queue, vk);
+
+      if (queue->engines & NVKMD_ENGINE_3D)
+         return queue->exec_ctx;
+   }
+
+   return NULL;
+}
+
+static void
+nvk_zbc_add_color(struct nvk_device *dev, VkFormat vk_format,
+                  const VkClearColorValue *color)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   struct nvk_zbc_table *zbc = &dev->zbc;
+   struct nvk_zbc_color entry = { };
+
+   if (!pdev->nvkmd->kmd_info.has_compression ||
+       !nvk_compression_needs_big_pages(pdev) ||
+       (pdev->debug_flags & NVK_DEBUG_NO_ZBC))
+      return;
+
+   const enum pipe_format p_format = nvk_format_to_pipe_format(vk_format);
+   if (p_format == PIPE_FORMAT_NONE ||
+       !nvk_zbc_color_format(p_format, &entry.format))
+      return;
+
+   /* the kernel refuses these, which would read as a full table */
+   for (unsigned i = 0; i < 4; i++) {
+      if (!isfinite(color->float32[i]))
+         return;
+   }
+
+   memcpy(entry.ds, color->uint32, sizeof(entry.ds));
+
+   simple_mtx_lock(&zbc->mutex);
+
+   if (zbc->colors_full)
+      goto unlock;
+
+   for (uint32_t i = 0; i < zbc->color_count; i++) {
+      if (!memcmp(&zbc->colors[i], &entry, sizeof(entry)))
+         goto unlock;
+   }
+
+   if (memcmp(&zbc->color_seen, &entry, sizeof(entry))) {
+      zbc->color_seen = entry;
+      goto unlock;
+   }
+
+   struct nvkmd_ctx *ctx = nvk_device_3d_ctx(dev);
+   if (ctx == NULL || !nvkmd_ctx_set_zbc_color(ctx, entry.format, entry.ds)) {
+      zbc->colors_full = true;
+      goto unlock;
+   }
+
+   assert(zbc->color_count < NVK_ZBC_MAX_ENTRIES);
+   zbc->colors[zbc->color_count++] = entry;
+   zbc->colors_full = zbc->color_count == NVK_ZBC_MAX_ENTRIES;
+
+unlock:
+   simple_mtx_unlock(&zbc->mutex);
+}
+
+static void
+nvk_zbc_add_depth(struct nvk_device *dev, VkFormat vk_format, float depth)
+{
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   struct nvk_zbc_table *zbc = &dev->zbc;
+   const uint32_t entry = fui(depth);
+
+   if (vk_format != VK_FORMAT_D32_SFLOAT || !isfinite(depth))
+      return;
+
+   if (!pdev->nvkmd->kmd_info.has_compression ||
+       !nvk_compression_needs_big_pages(pdev) ||
+       (pdev->debug_flags & NVK_DEBUG_NO_ZBC))
+      return;
+
+   simple_mtx_lock(&zbc->mutex);
+
+   if (zbc->depths_full)
+      goto unlock;
+
+   for (uint32_t i = 0; i < zbc->depth_count; i++) {
+      if (zbc->depths[i] == entry)
+         goto unlock;
+   }
+
+   if (!zbc->depth_seen_valid || zbc->depth_seen != entry) {
+      zbc->depth_seen = entry;
+      zbc->depth_seen_valid = true;
+      goto unlock;
+   }
+
+   struct nvkmd_ctx *ctx = nvk_device_3d_ctx(dev);
+   if (ctx == NULL || !nvkmd_ctx_set_zbc_depth(ctx, entry)) {
+      zbc->depths_full = true;
+      goto unlock;
+   }
+
+   assert(zbc->depth_count < NVK_ZBC_MAX_ENTRIES);
+   zbc->depths[zbc->depth_count++] = entry;
+   zbc->depths_full = zbc->depth_count == NVK_ZBC_MAX_ENTRIES;
+
+unlock:
+   simple_mtx_unlock(&zbc->mutex);
+}
 
 void
 nvk_mme_clear(struct mme_builder *b)
@@ -151,6 +309,8 @@ nvk_CmdClearAttachments(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_rendering_state *render = &cmd->state.gfx.render;
 
    struct nv_push *p = nvk_cmd_buffer_push(cmd, 4 + attachmentCount * 4);
 
@@ -175,6 +335,8 @@ nvk_CmdClearAttachments(VkCommandBuffer commandBuffer,
       if (pAttachments[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) {
          P_IMMD(p, NV9097, SET_Z_CLEAR_VALUE,
                 fui(pAttachments[i].clearValue.depthStencil.depth));
+         nvk_zbc_add_depth(dev, render->depth_att.vk_format,
+                           pAttachments[i].clearValue.depthStencil.depth);
          clear_depth = true;
       }
 
@@ -193,6 +355,13 @@ nvk_CmdClearAttachments(VkCommandBuffer commandBuffer,
          continue;
 
       VkClearColorValue color = pAttachments[i].clearValue.color;
+
+      if (pAttachments[i].colorAttachment < render->color_att_count) {
+         nvk_zbc_add_color(dev,
+            render->color_att[pAttachments[i].colorAttachment].vk_format,
+            &color);
+      }
+
       p = nvk_cmd_buffer_push(cmd, 5);
 
       P_MTHD(p, NV9097, SET_COLOR_CLEAR_VALUE(0));
