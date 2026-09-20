@@ -905,7 +905,7 @@ impl Image {
                     32 => {
                         if compressed {
                             match samples {
-                                1 => NV_MMU_PTE_KIND_C32_2C,
+                                1 => NV_MMU_PTE_KIND_C32_2CRA,
                                 2 => NV_MMU_PTE_KIND_C32_MS2_2C,
                                 4 => NV_MMU_PTE_KIND_C32_MS4_2C,
                                 8 | 16 => NV_MMU_PTE_KIND_C32_MS8_MS16_2C,
