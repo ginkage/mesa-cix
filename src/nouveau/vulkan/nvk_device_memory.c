@@ -158,6 +158,9 @@ nvk_AllocateMemory(VkDevice device,
       handle_types |= fd_info->handleType;
 
    const bool not_shared = handle_types == 0;
+   const bool can_compress = not_shared &&
+      nvk_mem_flags_can_compress(pdev,
+         nvk_memory_type_flags(type, handle_types, false));
    bool pinned_to_vram = false;
 
    /* Align to os page size (typically 4K) as a start as this works for
@@ -165,6 +168,14 @@ nvk_AllocateMemory(VkDevice device,
     * it as is or increase it to 64K or 2M.
     */
    uint32_t alignment = pdev->nvkmd->bind_align_B;
+
+   /* Device-local memory may end up backing a compressed image. */
+   if (pdev->nvkmd->kmd_info.has_compression &&
+       nvk_compression_needs_big_pages(pdev) &&
+       (type->propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+       can_compress &&
+       pAllocateInfo->allocationSize >= NVK_COMPRESSION_PAGE_SIZE_B)
+      alignment = NVK_COMPRESSION_PAGE_SIZE_B;
 
    uint8_t pte_kind = 0, tile_mode = 0;
    if (dedicated_info != NULL && dedicated_info->image != VK_NULL_HANDLE) {
@@ -181,7 +192,7 @@ nvk_AllocateMemory(VkDevice device,
          alignment = MAX2(alignment, image->planes[0].nil.align_B);
          pte_kind = image->planes[0].nil.pte_kind;
          tile_mode = image->planes[0].nil.tile_mode;
-      } else if (image->can_compress && not_shared) {
+      } else if (image->can_compress && can_compress) {
          /* If it's a dedicated alloc and it's not modifiers or shared, then
           * it's marked for compression and larger pages, so we set the pinned
           * bit and up the alignment.
@@ -192,7 +203,7 @@ nvk_AllocateMemory(VkDevice device,
           * the not_shared check.
           * https://qt-project.atlassian.net/browse/QTBUG-141866
           */
-         pinned_to_vram = true;
+         pinned_to_vram = pdev->info.vram_size_B > 0;
          pte_kind = image->planes[0].nil.compressed_pte_kind;
          tile_mode = image->planes[0].nil.tile_mode;
          /* Align to 2MiB if size is >= 2MiB, otherwise align to 64KiB. */

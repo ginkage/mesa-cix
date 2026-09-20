@@ -10,6 +10,7 @@
 #include "nvk_debug.h"
 #include "nvk_instance.h"
 #include "nv_device_info.h"
+#include "nvkmd/nvkmd.h"
 
 #include "vk_physical_device.h"
 #include "vk_sync.h"
@@ -74,6 +75,24 @@ static inline uint32_t
 nvk_use_edb_buffer_views(const struct nvk_physical_device *pdev)
 {
    return pdev->debug_flags & NVK_DEBUG_FORCE_EDB_BVIEW;
+}
+
+/* Pre-Turing comptag lines cover a 64KiB page. */
+#define NVK_COMPRESSION_PAGE_SIZE_B (1 << 16)
+
+static inline bool
+nvk_compression_needs_big_pages(const struct nvk_physical_device *pdev)
+{
+   return pdev->info.cls_eng3d < 0xC597 /* TURING_A */;
+}
+
+/* Pre-Turing compression is done in the L2, which coherent SoC maps bypass. */
+static inline bool
+nvk_mem_flags_can_compress(const struct nvk_physical_device *pdev,
+                           enum nvkmd_mem_flags flags)
+{
+   return !nvk_compression_needs_big_pages(pdev) ||
+          !(flags & NVKMD_MEM_COHERENT);
 }
 
 static inline const struct nvk_instance *

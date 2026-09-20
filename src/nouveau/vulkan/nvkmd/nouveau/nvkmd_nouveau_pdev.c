@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <xf86drm.h>
 
+#include "clb097.h"
 #include "clc597.h"
 #include "clc697.h"
 
@@ -102,7 +103,10 @@ nvkmd_nouveau_try_create_pdev(struct _drmDevice *drm_device,
       .has_alloc_tiled = nouveau_ws_device_has_tiled_bo(ws_dev),
       .has_map_fixed = true,
       .has_overmap = true,
-      .has_compression = (ws_dev->nouveau_version >= 0x01000403 &&
+      /* Only GM20B gets the 64KiB GART pages a pre-Turing comptag needs. */
+      .has_compression = (ws_dev->nouveau_version >= 0x01000404 &&
+                          ws_dev->info.chipset == 0x12b) ||
+                         (ws_dev->nouveau_version >= 0x01000403 &&
                           ws_dev->info.cls_eng3d >= TURING_A) ||
                          (ws_dev->nouveau_version >= 0x01000402 &&
                           ws_dev->info.cls_eng3d >= AMPERE_A),

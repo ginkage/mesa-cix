@@ -796,6 +796,15 @@ nvk_image_can_compress(const struct nvk_physical_device *pdev,
    if (image->vk.usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT)
       return false;
 
+   /* The stencil copy temp reinterprets the surface through another kind. */
+   if (nvk_compression_needs_big_pages(pdev) &&
+       image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT)
+      return false;
+
+   if (nvk_compression_needs_big_pages(pdev) &&
+       (pdev->debug_flags & NVK_DEBUG_FORCE_COHERENT))
+      return false;
+
    /* Our compression strategy depends on dedicated allocations, so we can't
     * enable compression for sparse images as dedicated allocations are not
     * compatible with sparse.
@@ -1143,10 +1152,19 @@ nvk_image_init(struct nvk_device *dev,
    image->image_align_B = 0;
    const bool sparse_bound =
       image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
+
+   /* No two sub-ranges may share a compression page: the comptags of one would
+    * then describe the bytes of the other.
+    */
+   const uint32_t sub_align_B =
+      image->can_compress && nvk_compression_needs_big_pages(pdev) ?
+         NVK_COMPRESSION_PAGE_SIZE_B : 1;
+
    for (uint8_t plane = 0; plane < image->plane_count; plane++) {
       uint32_t plane_align_B = image->planes[plane].nil.align_B;
       if (sparse_bound || image->planes[plane].nil.pte_kind)
          plane_align_B = MAX2(plane_align_B, pdev->nvkmd->bind_align_B);
+      plane_align_B = MAX2(plane_align_B, sub_align_B);
       image->planes[plane].plane_align_B = plane_align_B;
       image->image_align_B = MAX2(plane_align_B, image->image_align_B);
 
@@ -1168,16 +1186,19 @@ nvk_image_init(struct nvk_device *dev,
 
    if (image->zcull.nil.size_B > 0) {
       assert(image->vk.drm_format_mod == DRM_FORMAT_MOD_INVALID);
-      plane_offset_B = align64(plane_offset_B, image->zcull.nil.align_B);
+      const uint32_t zcull_align_B =
+         MAX2(image->zcull.nil.align_B, sub_align_B);
+      plane_offset_B = align64(plane_offset_B, zcull_align_B);
       image->zcull.plane_offset_B = plane_offset_B;
       plane_offset_B += image->zcull.nil.size_B;
       image->image_size_B = plane_offset_B;
-      image->image_align_B = MAX2(image->zcull.nil.align_B,
-                                  image->image_align_B);
+      image->image_align_B = MAX2(zcull_align_B, image->image_align_B);
    }
 
    if (image->stencil_copy_temp.nil.size_B > 0) {
       assert(image->vk.drm_format_mod == DRM_FORMAT_MOD_INVALID);
+      image->stencil_copy_temp.plane_align_B =
+         MAX2(image->stencil_copy_temp.plane_align_B, sub_align_B);
       plane_offset_B =
          align64(plane_offset_B, image->stencil_copy_temp.plane_align_B);
       image->stencil_copy_temp.plane_offset_B = plane_offset_B;
@@ -1187,13 +1208,17 @@ nvk_image_init(struct nvk_device *dev,
                                   image->image_align_B);
    }
 
+   /* A plane is bound over whole pages, so the last one has to have them. */
+   image->image_size_B = align64(image->image_size_B, image->image_align_B);
+
    return VK_SUCCESS;
 }
 
 static VkResult
 nvk_image_plane_alloc_va(struct nvk_device *dev,
                          const struct nvk_image *image,
-                         struct nvk_image_plane *plane)
+                         struct nvk_image_plane *plane,
+                         uint8_t pte_kind)
 {
    assert(plane->va == NULL);
    VkResult result;
@@ -1204,7 +1229,7 @@ nvk_image_plane_alloc_va(struct nvk_device *dev,
       image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
    assert(sparse_bound || !sparse_resident);
 
-   if (sparse_bound || plane->nil.pte_kind) {
+   if (sparse_bound || pte_kind) {
       enum nvkmd_va_flags va_flags = 0;
       if (sparse_resident)
          va_flags |= NVKMD_VA_SPARSE;
@@ -1213,7 +1238,7 @@ nvk_image_plane_alloc_va(struct nvk_device *dev,
       const uint64_t va_size_B = align64(plane->nil.size_B, va_align_B);
 
       result = nvkmd_dev_alloc_va(dev->nvkmd, &dev->vk.base,
-                                  va_flags, plane->nil.pte_kind,
+                                  va_flags, pte_kind,
                                   va_size_B, va_align_B,
                                   0 /* fixed_addr */, &plane->va);
       if (result != VK_SUCCESS)
@@ -1291,13 +1316,15 @@ nvk_CreateImage(VkDevice _device,
    if (image->vk.create_flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
                                  VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) {
       for (uint8_t plane = 0; plane < image->plane_count; plane++) {
-         result = nvk_image_plane_alloc_va(dev, image, &image->planes[plane]);
+         result = nvk_image_plane_alloc_va(dev, image, &image->planes[plane],
+                                          image->planes[plane].nil.pte_kind);
          if (result != VK_SUCCESS)
             goto fail;
       }
 
       if (image->stencil_copy_temp.nil.size_B > 0) {
-         result = nvk_image_plane_alloc_va(dev, image, &image->stencil_copy_temp);
+         result = nvk_image_plane_alloc_va(dev, image, &image->stencil_copy_temp,
+                                          image->stencil_copy_temp.nil.pte_kind);
          if (result != VK_SUCCESS)
             goto fail;
       }
@@ -1631,14 +1658,29 @@ nvk_image_plane_bind(struct nvk_device *dev,
    offset_B += plane->plane_offset_B;
    assert(offset_B % plane->plane_align_B == 0);
 
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
    const bool not_shared = !(mem->mem->flags & NVKMD_MEM_SHARED);
+   const bool can_compress = image->can_compress && not_shared &&
+      nvk_mem_flags_can_compress(pdev, mem->mem->flags);
+
+   /* A comptagged kind can be bound over a sub-range of an allocation. */
+   const bool can_compress_sub_range =
+      nvk_compression_needs_big_pages(pdev) &&
+      mem->mem->bind_align_B >= NVK_COMPRESSION_PAGE_SIZE_B;
 
    if (plane->nil.pte_kind != 0) {
-      if (mem->dedicated_image == image && image->can_compress && not_shared) {
+      if (mem->dedicated_image == image && can_compress) {
          image->is_compressed = true;
          plane->addr = mem->mem->va->addr + offset_B;
       } else {
-         VkResult result = nvk_image_plane_alloc_va(dev, image, plane);
+         uint8_t pte_kind = plane->nil.pte_kind;
+
+         if (can_compress && can_compress_sub_range) {
+            pte_kind = plane->nil.compressed_pte_kind;
+            image->is_compressed = true;
+         }
+
+         VkResult result = nvk_image_plane_alloc_va(dev, image, plane, pte_kind);
          if (result != VK_SUCCESS)
             return result;
 
