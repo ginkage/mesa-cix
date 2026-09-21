@@ -294,6 +294,18 @@ ubo_deref_to_cbuf(nir_deref_instr *deref,
    switch (binding_layout->type) {
    case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: {
+      /* Pre-Turing nvk_cmd_buffer_get_cbuf_addr() reads the descriptor at
+       * record time, so only promote one that cannot change after that.
+       */
+      if (ctx->dev_info->cls_eng3d < TURING_A &&
+          ((binding_layout->flags &
+            (VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+             VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT |
+             VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT)) ||
+           (ctx->set_layouts[set]->flags &
+            VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT)))
+         return invalid;
+
       *offset_out = 0;
       *start_out = offset;
       *end_out = offset + range;
@@ -456,14 +468,6 @@ build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
       /* We can't support indirect cbufs in compute yet */
       if ((nir->info.stage == MESA_SHADER_COMPUTE ||
            nir->info.stage == MESA_SHADER_KERNEL) &&
-          cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
-         continue;
-
-      /* Prior to Turing, indirect cbufs require splitting the pushbuf and
-       * pushing bits of the descriptor set.  Doing this every draw call is
-       * probably more overhead than it's worth.
-       */
-      if (ctx->dev_info->cls_eng3d < TURING_A &&
           cbufs[i].key.type == NVK_CBUF_TYPE_UBO_DESC)
          continue;
 

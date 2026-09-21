@@ -1369,18 +1369,35 @@ nvk_cmd_buffer_get_cbuf_addr(struct nvk_cmd_buffer *cmd,
    }
 
    case NVK_CBUF_TYPE_UBO_DESC: {
-      if (desc->sets[cbuf->desc_set].type != NVK_DESCRIPTOR_SET_TYPE_PUSH)
-         return false;
+      const struct nvk_descriptor_set_binding *b = &desc->sets[cbuf->desc_set];
 
-      struct nvk_push_descriptor_set *push = desc->sets[cbuf->desc_set].push;
-      if (push == NULL)
-         return false;
+      if (b->type == NVK_DESCRIPTOR_SET_TYPE_PUSH) {
+         struct nvk_push_descriptor_set *push = b->push;
+         if (push == NULL)
+            return false;
 
-      assert(cbuf->desc_offset < NVK_PUSH_DESCRIPTOR_SET_SIZE);
-      union nvk_buffer_descriptor desc;
-      memcpy(&desc, &push->data[cbuf->desc_offset], sizeof(desc));
-      *addr_out = nvk_ubo_descriptor_addr(pdev, desc);
-      return true;
+         assert(cbuf->desc_offset < NVK_PUSH_DESCRIPTOR_SET_SIZE);
+         union nvk_buffer_descriptor desc;
+         memcpy(&desc, &push->data[cbuf->desc_offset], sizeof(desc));
+         *addr_out = nvk_ubo_descriptor_addr(pdev, desc);
+         return true;
+      }
+
+      /* Pre-Turing the compiler only promotes a UBO whose descriptor is
+       * final once recorded, so read it here and skip the indirect bind.
+       */
+      if (pdev->info.cls_eng3d < TURING_A &&
+          b->type == NVK_DESCRIPTOR_SET_TYPE_SET && b->set != NULL &&
+          b->set->map != NULL &&
+          cbuf->desc_offset + sizeof(union nvk_buffer_descriptor) <=
+             b->set->size_B) {
+         union nvk_buffer_descriptor desc;
+         memcpy(&desc, (char *)b->set->map + cbuf->desc_offset, sizeof(desc));
+         *addr_out = nvk_ubo_descriptor_addr(pdev, desc);
+         return true;
+      }
+
+      return false;
    }
 
    default:
