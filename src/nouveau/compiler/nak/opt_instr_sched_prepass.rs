@@ -515,19 +515,21 @@ impl<'a> GenerateOrder<'a> {
                 <= thresholds.heuristic_threshold
                 && used_regs[RegFile::Pred] < self.max_regs[RegFile::Pred]
             {
-                let ReadyInstr { index, .. } = ready_instrs.pop_last().unwrap();
-                index
+                let ReadyInstr { index, .. } =
+                    ready_instrs.pop_first().unwrap();
+                index.0
             } else {
                 let (new_score, ready_instr) = ready_instrs
                     .iter()
                     .map(|ready_instr| {
                         (
-                            self.new_score(ready_instr.index, 0, thresholds),
-                            ready_instr.clone(),
+                            self.new_score(ready_instr.index.0, 0, thresholds),
+                            Reverse(ready_instr.clone()),
                         )
                     })
                     .max()
                     .unwrap();
+                let ready_instr = ready_instr.0;
 
                 let better_candidate = future_ready_instrs
                     .iter()
@@ -555,7 +557,7 @@ impl<'a> GenerateOrder<'a> {
                     future_ready_instr.index
                 } else {
                     ready_instrs.remove(&ready_instr);
-                    ready_instr.index
+                    ready_instr.index.0
                 }
             };
 
@@ -1061,5 +1063,84 @@ impl Shader<'_> {
         for f in &mut self.functions {
             f.opt_instr_sched_prepass(self.sm, max_regs);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::opt_instr_sched_common::{test_conv_edges, test_dep_graph};
+
+    const NORMAL: ScheduleThresholds = ScheduleThresholds {
+        heuristic_threshold: 64,
+        quit_threshold: 64,
+    };
+    const PRESSURE: ScheduleThresholds = ScheduleThresholds {
+        heuristic_threshold: -1,
+        quit_threshold: 64,
+    };
+
+    /// Independent copies of x (or zero) into live-out values: only the graph
+    /// orders them, and copies of the same kind always score the same
+    fn order(
+        zero_src: &[bool],
+        exec_latency: &[u32],
+        edges: &[(usize, usize, u32)],
+        thresholds: ScheduleThresholds,
+    ) -> Vec<usize> {
+        let mut alloc = SSAValueAllocator::new();
+        let x = alloc.alloc(RegFile::GPR);
+        let mut live_out = LiveSet::new();
+        let instrs: Vec<Instr> = zero_src
+            .iter()
+            .map(|&zero| {
+                let dst = alloc.alloc(RegFile::GPR);
+                live_out.insert(dst);
+                let src = if zero { 0.into() } else { x.into() };
+                Instr::new(OpCopy {
+                    dst: dst.into(),
+                    src,
+                })
+            })
+            .collect();
+
+        let (g, init_ready_list) = test_dep_graph(exec_latency, edges);
+        let max_regs = PerRegFile::new_with(|_| 64);
+        let (mut order, _) = GenerateOrder::new(max_regs, &instrs, &live_out)
+            .generate_order(&g, &init_ready_list, thresholds)
+            .unwrap();
+        order.reverse();
+        order
+    }
+
+    #[test]
+    fn test_sched_prepass_index_tie() {
+        for t in [NORMAL, PRESSURE] {
+            assert_eq!(order(&[false; 3], &[1; 3], &[], t), [0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn test_sched_prepass_min_height_last() {
+        // Equal scores, so only the height orders them: the deepest first
+        for t in [NORMAL, PRESSURE] {
+            assert_eq!(order(&[false; 3], &[1, 5, 3], &[], t), [1, 2, 0]);
+        }
+    }
+
+    #[test]
+    fn test_sched_prepass_pressure_beats_height() {
+        // Copying zero frees a register without making x live, so under
+        // pressure it is scheduled last despite being the deepest
+        let zero_src = [true, false];
+        assert_eq!(order(&zero_src, &[5, 1], &[], NORMAL), [0, 1]);
+        assert_eq!(order(&zero_src, &[5, 1], &[], PRESSURE), [1, 0]);
+    }
+
+    #[test]
+    fn test_sched_prepass_hoists_tex() {
+        let order =
+            order(&[false; 8], &[1; 8], &test_conv_edges(4, 20, 6), NORMAL);
+        assert_eq!(order, [0, 2, 4, 6, 1, 3, 5, 7]);
     }
 }

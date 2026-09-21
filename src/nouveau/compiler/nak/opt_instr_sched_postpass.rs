@@ -141,7 +141,7 @@ fn generate_order(
     g: &mut DepGraph,
     init_ready_list: Vec<usize>,
 ) -> (Vec<usize>, u64) {
-    let mut ready_instrs: BinaryHeap<ReadyInstr> = BinaryHeap::new();
+    let mut ready_instrs: BinaryHeap<Reverse<ReadyInstr>> = BinaryHeap::new();
     let mut future_ready_instrs: BinaryHeap<FutureReadyInstr> = init_ready_list
         .into_iter()
         .map(|i| FutureReadyInstr::new(g, i))
@@ -158,7 +158,7 @@ fn generate_order(
             if current_cycle < fri.ready_cycle.0 {
                 break;
             }
-            ready_instrs.push(ReadyInstr::new(g, fri.index));
+            ready_instrs.push(Reverse(ReadyInstr::new(g, fri.index)));
             future_ready_instrs.pop();
         }
 
@@ -176,7 +176,7 @@ fn generate_order(
                     continue;
                 }
             },
-            Some(ReadyInstr { index, .. }) => index,
+            Some(Reverse(ReadyInstr { index, .. })) => index.0,
         };
 
         // Schedule the instuction
@@ -252,5 +252,41 @@ impl Shader<'_> {
         for f in &mut self.functions {
             self.info.num_static_cycles += f.opt_instr_sched_postpass(self.sm);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::opt_instr_sched_common::{test_conv_edges, test_dep_graph};
+
+    fn order(
+        exec_latency: &[u32],
+        edges: &[(usize, usize, u32)],
+    ) -> (Vec<usize>, u64) {
+        let (mut g, init_ready_list) = test_dep_graph(exec_latency, edges);
+        let (mut order, cycles) = generate_order(&mut g, init_ready_list);
+        order.reverse();
+        (order, cycles)
+    }
+
+    #[test]
+    fn test_sched_postpass_index_tie() {
+        assert_eq!(order(&[1, 1, 1], &[]).0, [0, 1, 2]);
+    }
+
+    #[test]
+    fn test_sched_postpass_min_height_last() {
+        // Independent, so only the height orders them: the deepest first
+        assert_eq!(order(&[1, 5, 3], &[]).0, [1, 2, 0]);
+    }
+
+    #[test]
+    fn test_sched_postpass_hoists_tex() {
+        // The fetches are ready alongside earlier accumulates, so only the
+        // height keeps them from sinking (13 cycles if it does)
+        let (order, cycles) = order(&[1; 10], &test_conv_edges(5, 4, 1));
+        assert_eq!(order, [0, 2, 4, 6, 1, 8, 3, 5, 7, 9]);
+        assert_eq!(cycles, 10);
     }
 }

@@ -392,7 +392,7 @@ pub struct ReadyInstr {
     // being that the original schedule is often not too bad. Since we're
     // iterating in reverse order, that means scheduling the largest instruciton
     // index first.
-    pub index: usize,
+    pub index: Reverse<usize>,
 }
 
 impl ReadyInstr {
@@ -404,7 +404,7 @@ impl ReadyInstr {
         let cycles_to_end = label.cycles_to_end + label.exec_latency;
         ReadyInstr {
             cycles_to_end,
-            index: i,
+            index: Reverse(i),
         }
     }
 }
@@ -463,4 +463,44 @@ pub fn save_graphviz(
     writeln!(w, "}}")?;
     w.flush()?;
     Ok(())
+}
+
+/// Builds a forward dependency graph from explicit exec latencies and
+/// (tail, head, latency) edges, then prepares it the way both passes do.
+#[cfg(test)]
+pub fn test_dep_graph(
+    exec_latency: &[u32],
+    edges: &[(usize, usize, u32)],
+) -> (DepGraph, Vec<usize>) {
+    let mut g =
+        DepGraph::new(exec_latency.iter().map(|&exec_latency| NodeLabel {
+            exec_latency,
+            ..Default::default()
+        }));
+    for &(tail, head, latency) in edges {
+        g.add_edge(tail, head, EdgeLabel { latency });
+    }
+    let init_ready_list = calc_statistics(&mut g);
+    g.reverse();
+    (g, init_ready_list)
+}
+
+/// Edges of tex0, acc0 = f(tex0), tex1, acc1 = f(acc0, tex1), ... with the
+/// fetches serialized as memory ops
+#[cfg(test)]
+pub fn test_conv_edges(
+    taps: usize,
+    tex_latency: u32,
+    acc_latency: u32,
+) -> Vec<(usize, usize, u32)> {
+    let mut edges = Vec::new();
+    for tap in 0..taps {
+        let (tex, acc) = (2 * tap, 2 * tap + 1);
+        edges.push((tex, acc, tex_latency));
+        if tap > 0 {
+            edges.push((tex - 2, tex, 0));
+            edges.push((acc - 2, acc, acc_latency));
+        }
+    }
+    edges
 }
