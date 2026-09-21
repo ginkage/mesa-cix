@@ -1833,3 +1833,50 @@ pub fn test_float_ops() {
         c.check(sm);
     }
 }
+
+#[test]
+pub fn test_sm50_bound_tex() {
+    let r0 = RegRef::new(RegFile::GPR, 0, 1);
+    let r1 = RegRef::new(RegFile::GPR, 1, 1);
+    let r2 = RegRef::new(RegFile::GPR, 2, 1);
+
+    for &sm in sm_list() {
+        if sm >= 70 {
+            continue;
+        }
+
+        let mut c = DisasmCheck::new();
+        for (idx, lod_mode) in
+            [(0x5, TexLodMode::Auto), (0x1a3, TexLodMode::Lod)]
+        {
+            let instr = OpTex {
+                dsts: [Dst::Reg(r0), Dst::None],
+                fault: Dst::None,
+
+                tex: TexRef::Bound(idx),
+
+                srcs: [SrcRef::Reg(r1).into(), SrcRef::Reg(r2).into()],
+
+                dim: TexDim::_2D,
+                lod_mode,
+                deriv_mode: TexDerivMode::Auto,
+                z_cmpr: false,
+                offset_mode: TexOffsetMode::None,
+                mem_eviction_priority: MemEvictionPriority::First,
+                nodep: true,
+                channel_mask: ChannelMask::for_comps(3),
+                scalar: false,
+            };
+            let ll = if lod_mode == TexLodMode::Lod {
+                ".ll"
+            } else {
+                ""
+            };
+            c.push(
+                instr,
+                format!("tex{ll}.nodep r0, r1, r2, {idx:#x}, 2d, 0x7;"),
+            );
+        }
+        c.check(sm);
+    }
+}
