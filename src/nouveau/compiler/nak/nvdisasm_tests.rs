@@ -1880,3 +1880,38 @@ pub fn test_sm50_bound_tex() {
         c.check(sm);
     }
 }
+
+#[test]
+pub fn test_sm50_dsetp_cbuf() {
+    let r2 = RegRef::new(RegFile::GPR, 2, 2);
+    let p1 = RegRef::new(RegFile::Pred, 1, 1);
+    let p2 = RegRef::new(RegFile::Pred, 2, 1);
+
+    for &sm in sm_list() {
+        if sm >= 70 {
+            continue;
+        }
+
+        let cb = Src::from(CBufRef {
+            buf: CBuf::Binding(3),
+            offset: 0x48,
+        });
+        let mut c = DisasmCheck::new();
+        for (src1, src1_str) in [
+            (cb.clone(), "c[0x3][0x48]"),
+            (cb.clone().fneg(), "-c[0x3][0x48]"),
+            (cb.clone().fabs(), "|c[0x3][0x48]|"),
+            (cb.fabs().fneg(), "-|c[0x3][0x48]|"),
+        ] {
+            let instr = OpDSetP {
+                dst: Dst::Reg(p1),
+                set_op: PredSetOp::Or,
+                cmp_op: FloatCmpOp::OrdLt,
+                srcs: [Src::from(r2).fneg(), src1],
+                accum: Src::from(p2),
+            };
+            c.push(instr, format!("dsetp.lt.or p1, pt, -r2, {src1_str}, p2;"));
+        }
+        c.check(sm);
+    }
+}

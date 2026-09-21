@@ -1143,7 +1143,7 @@ impl SM50Op for OpDSetP {
             }
             SrcRef::CBuf(_) => {
                 e.set_opcode(0x4b80);
-                e.set_reg_fmod_src(20..39, 44, 6, &self.srcs[1]);
+                e.set_cb_fmod_src(20..39, 44, 6, &self.srcs[1]);
             }
             src => panic!("Invalid dsetp src1: {src}"),
         }
