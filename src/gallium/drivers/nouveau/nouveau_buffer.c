@@ -1133,7 +1133,8 @@ static inline int
 nouveau_scratch_bo_alloc(struct nouveau_context *nv, struct nouveau_bo **pbo,
                          unsigned size)
 {
-   return nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART | NOUVEAU_BO_MAP,
+   return nouveau_bo_new(nv->screen->device,
+                         NOUVEAU_BO_GART | NOUVEAU_BO_MAP | NOUVEAU_BO_WC,
                          4096, size, NULL, pbo);
 }
 

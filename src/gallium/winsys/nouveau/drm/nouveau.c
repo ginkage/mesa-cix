@@ -819,6 +819,9 @@ nouveau_bo_new(struct nouveau_device *dev, uint32_t flags, uint32_t align, uint6
    if (bo->flags & NOUVEAU_BO_COHERENT)
       info->domain |= NOUVEAU_GEM_DOMAIN_COHERENT;
 
+   if (bo->flags & NOUVEAU_BO_WC)
+      info->domain |= NOUVEAU_GEM_DOMAIN_WC;
+
    if (!(bo->flags & NOUVEAU_BO_CONTIG))
       info->tile_flags = NOUVEAU_GEM_TILE_NONCONTIG;
 
