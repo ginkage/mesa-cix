@@ -308,8 +308,14 @@ nvc0_rasterizer_state_create(struct pipe_context *pipe,
         SB_DATA    (so, fui(cso->offset_clamp));
     }
 
+    /* clip Z before polygon offset (geometry clipper), clamp it after */
     if (cso->depth_clip_near)
-       reg = NVC0_3D_VIEW_VOLUME_CLIP_CTRL_UNK1_UNK1;
+       reg =
+          NVC0_3D_VIEW_VOLUME_CLIP_CTRL_UNK1_UNK2 |
+          NVC0_3D_VIEW_VOLUME_CLIP_CTRL_DEPTH_CLAMP_NEAR |
+          NVC0_3D_VIEW_VOLUME_CLIP_CTRL_DEPTH_CLAMP_FAR |
+          NVC0_3D_VIEW_VOLUME_CLIP_CTRL_UNK11 |
+          NVC0_3D_VIEW_VOLUME_CLIP_CTRL_UNK12_UNK1;
     else
        reg =
           NVC0_3D_VIEW_VOLUME_CLIP_CTRL_UNK1_UNK1 |
