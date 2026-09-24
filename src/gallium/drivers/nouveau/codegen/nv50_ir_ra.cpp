@@ -2442,6 +2442,8 @@ RegAlloc::InsertConstraintsPass::insertConstraintMoves()
             mov = new_Instruction(func, OP_MOV, typeOfSize(size));
             mov->setSrc(0, lval);
             mov->setDef(0, cst->getDef(d));
+            if (cst->getPredicate())
+               mov->setPredicate(cst->cc, cst->getPredicate());
             cst->setDef(d, mov->getSrc(0));
             cst->bb->insertAfter(cst, mov);
 
