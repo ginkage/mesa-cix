@@ -2376,10 +2376,11 @@ Converter::visit(nir_intrinsic_instr *insn)
             srcs.push_back(getSrc(&insn->src[3], i));
       }
 
-      if (opInfo.num_srcs >= 5 && lod_src != 5)
-         // 1 for aotmic swap
-         for (uint8_t i = 0u; i < opInfo.src_components[4]; ++i)
+      if (opInfo.num_srcs >= 5 && lod_src != 5) {
+         unsigned components = opInfo.src_components[4] ? opInfo.src_components[4] : insn->num_components;
+         for (uint8_t i = 0u; i < components; ++i)
             srcs.push_back(getSrc(&insn->src[4], i));
+      }
 
       TexInstruction *texi = mkTex(getOperation(op), target.getEnum(), location, 0, defs, srcs);
       texi->tex.bindless = bindless;
