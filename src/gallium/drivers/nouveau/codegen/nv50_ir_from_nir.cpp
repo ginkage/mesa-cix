@@ -881,6 +881,9 @@ Converter::setInterpolate(nv50_ir_varying *var,
       var->linear = 1;
       break;
    case INTERP_MODE_SMOOTH:
+      /* a[0x7c] already holds 1/w: position must not be divided by it again */
+      if (semantic == TGSI_SEMANTIC_POSITION)
+         var->linear = 1;
       break;
    }
    var->centroid = centroid;
