@@ -1439,11 +1439,16 @@ nv50_blit_3d(struct nv50_context *nv50, const struct pipe_blit_info *info)
    miny = info->dst.box.y;
    maxy = info->dst.box.y + info->dst.box.height;
    if (info->scissor_enable) {
-      minx = MAX2(minx, info->scissor.minx);
-      maxx = MIN2(maxx, info->scissor.maxx);
-      miny = MAX2(miny, info->scissor.miny);
-      maxy = MIN2(maxy, info->scissor.maxy);
+      minx = MAX2(minx, (int32_t)info->scissor.minx);
+      maxx = MIN2(maxx, (int32_t)info->scissor.maxx);
+      miny = MAX2(miny, (int32_t)info->scissor.miny);
+      maxy = MIN2(maxy, (int32_t)info->scissor.maxy);
    }
+   /* no negative bound may reach the register, and an empty box stays empty */
+   minx = MAX2(minx, 0);
+   miny = MAX2(miny, 0);
+   maxx = MAX2(maxx, minx);
+   maxy = MAX2(maxy, miny);
    BEGIN_NV04(push, NV50_3D(SCISSOR_HORIZ(0)), 2);
    PUSH_DATA (push, (maxx << 16) | minx);
    PUSH_DATA (push, (maxy << 16) | miny);
