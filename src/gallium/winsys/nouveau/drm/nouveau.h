@@ -21,6 +21,7 @@
 #define NOUVEAU_BO_NOBLOCK  0x00000400
 #define NOUVEAU_BO_LOW      0x00001000
 #define NOUVEAU_BO_OR       0x00004000
+#define NOUVEAU_BO_SHARED   0x01000000
 #define NOUVEAU_BO_WC       0x08000000
 #define NOUVEAU_BO_COHERENT 0x10000000
 #define NOUVEAU_BO_NOSNOOP  0x20000000
@@ -187,7 +188,14 @@ int nouveau_bo_prime_handle_ref(struct nouveau_device *, int prime_fd, struct no
 void nouveau_bo_ref(struct nouveau_bo *, struct nouveau_bo **);
 int nouveau_bo_set_prime(struct nouveau_bo *, int *prime_fd);
 int nouveau_bo_wait(struct nouveau_bo *, uint32_t access, struct nouveau_client *);
+/* VM_BIND: wait until the kernel has completed the last EXEC that used the bo,
+ * whose fence means the job's writes reached memory; 0 at once otherwise */
+int nouveau_bo_wait_exec(struct nouveau_bo *, bool noblock);
+/* allocated without NOUVEAU_BO_SHARED on VM_BIND, which the kernel won't export */
+bool nouveau_bo_is_private(struct nouveau_bo *);
 bool nouveau_bo_is_lost(struct nouveau_bo *);
+/* submits go through VM_BIND/EXEC, whose fences mean the job's writes reached memory */
+bool nouveau_device_vm_bind(struct nouveau_device *);
 int nouveau_bo_wrap(struct nouveau_device *, uint32_t handle, struct nouveau_bo **);
 
 int nouveau_bufctx_new(struct nouveau_client *, int bins, struct nouveau_bufctx **);

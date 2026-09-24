@@ -1751,15 +1751,16 @@ nvc0_flush_resource(struct pipe_context *ctx,
    struct nv50_miptree *tmp;
    unsigned l;
 
-   /* No VRAM: the kernel won't export a compressed buffer, so a resource about
-    * to be shared moves to the storage a shared one is created with. */
-   if (resource->target == PIPE_BUFFER || (resource->bind & PIPE_BIND_SHARED) ||
-       (NV_VRAM_DOMAIN(&screen->base) & NOUVEAU_BO_VRAM))
+   /* The kernel won't export a private buffer, nor a compressed one without
+    * VRAM: a resource about to be shared moves to shareable storage. */
+   if (resource->target == PIPE_BUFFER || (resource->bind & PIPE_BIND_SHARED))
       return;
-   if (nouveau_bo_memtype(mt->base.bo) !=
-          nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, true) ||
-       nouveau_bo_memtype(mt->base.bo) ==
-          nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, false))
+   if (!nouveau_bo_is_private(mt->base.bo) &&
+       ((NV_VRAM_DOMAIN(&screen->base) & NOUVEAU_BO_VRAM) ||
+        nouveau_bo_memtype(mt->base.bo) !=
+           nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, true) ||
+        nouveau_bo_memtype(mt->base.bo) ==
+           nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, false)))
       return;
 
    simple_mtx_lock(&screen->storage_lock);
@@ -1781,9 +1782,10 @@ nvc0_flush_resource(struct pipe_context *ctx,
       nvc0_resource_copy_region(ctx, res, l, 0, 0, 0, resource, l, &box);
    }
 
-   /* same layout, only the kind differs */
+   /* same layout, only the kind and placement differ */
    SWAP(mt->base.bo, tmp->base.bo);
    SWAP(mt->base.address, tmp->base.address);
+   SWAP(mt->base.domain, tmp->base.domain);
    resource->bind = templ.bind;
    mt->base.status |= NOUVEAU_BUFFER_STATUS_GPU_WRITING;
    nouveau_fence_ref(nvc0->base.fence, &mt->base.fence, &screen->base);

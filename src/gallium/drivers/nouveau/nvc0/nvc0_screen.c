@@ -842,7 +842,8 @@ nvc0_screen_create(struct nouveau_device *dev)
       FAIL_SCREEN_INIT("Error allocating fence BO: %d\n", ret);
    BO_MAP(&screen->base, screen->fence.bo, 0, NULL);
    screen->fence.map = screen->fence.bo->map;
-   screen->fence.l2_flush = dev->chipset == 0x12b && dev->info.type == NV_DEVICE_TYPE_SOC;
+   screen->fence.l2_flush = dev->chipset == 0x12b && dev->info.type == NV_DEVICE_TYPE_SOC &&
+                            !nouveau_device_vm_bind(dev);
    screen->base.fence.emit = nvc0_screen_fence_emit;
    screen->base.fence.update = nvc0_screen_fence_update;
 

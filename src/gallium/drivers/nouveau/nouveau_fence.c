@@ -171,9 +171,12 @@ _nouveau_fence_update(struct nouveau_screen *screen, bool flushed)
 
    next = fence_list->head;
    while ((fence = next)) {
-      /* the fence of discarded work retires as lost, whatever the sequence */
+      /* The GPU writes the sequence before the kernel has seen the job end,
+       * and only then are the job's writes sure to be out of the GPU L2.
+       * The fence of discarded work retires as lost, whatever the sequence. */
       fence->lost = nouveau_bo_is_lost(fence->bo);
-      if (!fence->lost && fence_list->sequence_ack == sequence)
+      if (!fence->lost && (fence_list->sequence_ack == sequence ||
+                           nouveau_bo_wait_exec(fence->bo, true)))
          break;
 
       next = fence->next;

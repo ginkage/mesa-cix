@@ -98,13 +98,9 @@ nvc0_hw_query_update(struct nouveau_client *cli, struct nvc0_query *q)
 {
    struct nvc0_hw_query *hq = nvc0_hw_query(q);
 
-   if (hq->is64bit) {
-      if (nouveau_fence_signalled(hq->fence))
-         hq->state = NVC0_HW_QUERY_STATE_READY;
-   } else {
-      if (hq->data[0] == hq->sequence)
-         hq->state = NVC0_HW_QUERY_STATE_READY;
-   }
+   /* a report the CPU sees may still share the GPU L2 with its other half */
+   if (nouveau_fence_signalled(hq->fence))
+      hq->state = NVC0_HW_QUERY_STATE_READY;
 }
 
 static void
@@ -300,8 +296,7 @@ nvc0_hw_end_query(struct nvc0_context *nvc0, struct nvc0_query *q)
    default:
       break;
    }
-   if (hq->is64bit)
-      nouveau_fence_ref(nvc0->base.fence, &hq->fence, nvc0->base.screen);
+   nouveau_fence_ref(nvc0->base.fence, &hq->fence, nvc0->base.screen);
 }
 
 static bool

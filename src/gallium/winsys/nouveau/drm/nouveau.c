@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <xf86drm.h>
 
+#include "drm-uapi/dma-buf.h"
 #include "drm-uapi/nouveau_drm.h"
 #include "nouveau.h"
 #include "nvif/class.h"
@@ -15,11 +16,13 @@
 #include "nv_push.h"
 
 #include "util/bitscan.h"
+#include "util/libsync.h"
 #include "util/list.h"
 #include "util/os_mman.h"
 #include "util/simple_mtx.h"
 #include "util/u_atomic.h"
 #include "util/u_memory.h"
+#include "util/vma.h"
 
 static FILE *nouveau_out = NULL;
 static uint32_t nouveau_debug = 0;
@@ -333,11 +336,70 @@ struct nouveau_device_priv {
    unsigned bo_cache_nr;
    uint64_t bo_cache_bytes;
 
-   /* written by every ordered submit, so that the kernel orders them */
+   /* VM_BIND/EXEC: userspace owns the GPU VA space */
+   bool vm_bind;
+   simple_mtx_t vm_lock;
+   struct util_vma_heap vma_heap;
+   struct list_head vm_zombies;
+   uint32_t syncobj; /* timeline, one point per EXEC */
+   uint32_t implicit_syncobj;
+   uint64_t timeline;
+   uint64_t timeline_done;
+   uint32_t exec_push_max;
+
+   /* ordered pushbufs: channel and point of the last submit, under vm_lock */
+   uint64_t order_channel;
+   uint64_t order_point;
+   /* legacy: written by every ordered submit, so that the kernel orders them */
    struct nouveau_bo *order_bo;
 };
 
+struct nouveau_vm_zombie {
+   struct list_head head;
+   uint64_t va;
+   uint64_t size;
+   uint64_t point;
+};
+
 static void nouveau_bo_cache_fini(struct nouveau_device_priv *nvdev);
+static int vm_point_wait(struct nouveau_device_priv *nvdev, uint64_t point, bool noblock);
+static void vm_unmap_locked(struct nouveau_device_priv *nvdev, uint64_t va, uint64_t size);
+
+static int
+nouveau_device_vm_init(struct nouveau_device_priv *nvdev, int fd)
+{
+   struct drm_nouveau_vm_init init = {
+      .kernel_managed_addr = 1ull << 39,
+      .kernel_managed_size = (1ull << 40) - (1ull << 39),
+   };
+   uint64_t v;
+
+   /* VM_BIND needs NOUVEAU_GEM_DOMAIN_WC: nothing cleans a cached CPU mapping */
+   if (nvdev->base.chipset < 0xc0 || nouveau_drm(&nvdev->base.object)->version < 0x01000405)
+      return 0;
+
+   const char *env = os_get_option("NOUVEAU_VM_BIND");
+   if (env ? !atoi(env) : nvdev->base.info.type != NV_DEVICE_TYPE_SOC)
+      return 0;
+
+   if (drmCommandWrite(fd, DRM_NOUVEAU_VM_INIT, &init, sizeof(init)))
+      return 0;
+
+   /* from here on the legacy submit path is gone for this fd */
+   if (drmSyncobjCreate(fd, 0, &nvdev->syncobj) ||
+       drmSyncobjCreate(fd, 0, &nvdev->implicit_syncobj))
+      return -errno;
+
+   nvdev->exec_push_max = NOUVEAU_GEM_MAX_PUSH;
+   if (!nouveau_getparam(&nvdev->base, NOUVEAU_GETPARAM_EXEC_PUSH_MAX, &v))
+      nvdev->exec_push_max = MIN2(v, NOUVEAU_GEM_MAX_PUSH);
+
+   util_vma_heap_init(&nvdev->vma_heap, (1ull << 20),
+                      init.kernel_managed_addr - (1ull << 20));
+   nvdev->vma_heap.alloc_high = false;
+   nvdev->vm_bind = true;
+   return 0;
+}
 
 static inline struct nouveau_device_priv *
 nouveau_device(struct nouveau_device *dev)
@@ -487,7 +549,11 @@ nouveau_device_new(struct nouveau_object *parent, struct nouveau_device **pdev)
 
    simple_mtx_init(&nvdev->lock, mtx_plain);
    simple_mtx_init(&nvdev->bo_cache_lock, mtx_plain);
+   simple_mtx_init(&nvdev->vm_lock, mtx_plain);
    list_inithead(&nvdev->bo_list);
+   list_inithead(&nvdev->vm_zombies);
+
+   ret = nouveau_device_vm_init(nvdev, drm->fd);
 done:
    if (ret)
       nouveau_device_del(pdev);
@@ -516,6 +582,21 @@ nouveau_device_del(struct nouveau_device **pdev)
 
    nouveau_bo_ref(NULL, &nvdev->order_bo);
    nouveau_bo_cache_fini(nvdev);
+   if (nvdev->vm_bind) {
+      struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+      /* the fd, and with it the VM, usually outlives the device */
+      simple_mtx_lock(&nvdev->vm_lock);
+      list_for_each_entry_safe(struct nouveau_vm_zombie, z, &nvdev->vm_zombies, head) {
+         vm_point_wait(nvdev, z->point, false);
+         vm_unmap_locked(nvdev, z->va, z->size);
+         free(z);
+      }
+      simple_mtx_unlock(&nvdev->vm_lock);
+      util_vma_heap_finish(&nvdev->vma_heap);
+      drmSyncobjDestroy(drm->fd, nvdev->syncobj);
+      drmSyncobjDestroy(drm->fd, nvdev->implicit_syncobj);
+   }
+   simple_mtx_destroy(&nvdev->vm_lock);
    simple_mtx_destroy(&nvdev->bo_cache_lock);
    simple_mtx_destroy(&nvdev->lock);
    free(nvdev);
@@ -584,14 +665,152 @@ struct nouveau_bo_priv {
    uint32_t alloc_flags;
    uint32_t alloc_align;
    bool cacheable;
+   /* VM_BIND: timeline point and channel of the last EXEC that referenced
+    * this bo, the last EXEC on any other channel, and the last that wrote it */
+   uint64_t last_point;
+   uint64_t other_point;
+   uint64_t write_point;
+   int last_channel;
+   int write_channel;
    /* written by a pushbuf the kernel rejected: undefined until written again */
    bool lost;
+   /* VM_BIND: dma-buf fd + 1 of a shared bo, for implicit sync */
+   int dmabuf_fd1;
+   /* VM_BIND: allocated NO_SHARE, so it can never be exported */
+   bool no_share;
 };
 
 static inline struct nouveau_bo_priv *
 nouveau_bo(struct nouveau_bo *bo)
 {
    return (struct nouveau_bo_priv *)bo;
+}
+
+#define NOUVEAU_BIG_PAGE (1ull << 16)
+
+static bool
+vm_point_done(struct nouveau_device_priv *nvdev, uint64_t point)
+{
+   struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+   uint64_t done = p_atomic_read(&nvdev->timeline_done);
+
+   if (point <= done)
+      return true;
+   if (drmSyncobjQuery(drm->fd, &nvdev->syncobj, &done, 1))
+      return false;
+   if (done > p_atomic_read(&nvdev->timeline_done))
+      p_atomic_set(&nvdev->timeline_done, done);
+   return point <= done;
+}
+
+static int
+vm_point_wait(struct nouveau_device_priv *nvdev, uint64_t point, bool noblock)
+{
+   struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+
+   if (point <= p_atomic_read(&nvdev->timeline_done))
+      return 0;
+   /* a wait on a signalled point returns at once, no need to query first */
+   if (noblock)
+      return vm_point_done(nvdev, point) ? 0 : -EBUSY;
+   int ret = drmSyncobjTimelineWait(drm->fd, &nvdev->syncobj, &point, 1, INT64_MAX,
+                                    DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
+   if (ret)
+      return -errno;
+   if (point > p_atomic_read(&nvdev->timeline_done))
+      p_atomic_set(&nvdev->timeline_done, point);
+   return 0;
+}
+
+static int
+vm_bind_op(struct nouveau_device_priv *nvdev, uint32_t op, uint32_t handle,
+           uint64_t va, uint64_t size, uint32_t kind)
+{
+   struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+   struct drm_nouveau_vm_bind_op bop = {
+      .op = op,
+      .flags = kind,
+      .handle = handle,
+      .addr = va,
+      .range = size,
+   };
+   struct drm_nouveau_vm_bind req = {
+      .op_count = 1,
+      .op_ptr = (uintptr_t)&bop,
+   };
+
+   return drmCommandWriteRead(drm->fd, DRM_NOUVEAU_VM_BIND, &req, sizeof(req));
+}
+
+static int
+vm_map(struct nouveau_device_priv *nvdev, struct nouveau_bo *bo, uint64_t align, uint32_t kind)
+{
+   simple_mtx_lock(&nvdev->vm_lock);
+   uint64_t va = util_vma_heap_alloc(&nvdev->vma_heap, bo->size, MAX2(align, 4096));
+   simple_mtx_unlock(&nvdev->vm_lock);
+   if (!va)
+      return -ENOMEM;
+
+   int ret = vm_bind_op(nvdev, DRM_NOUVEAU_VM_BIND_OP_MAP, bo->handle, va, bo->size, kind);
+   dbg(2, "map %#"PRIx64"+%#"PRIx64" h%u kind %02x: %d\n", va, bo->size, bo->handle, kind, ret);
+   if (ret) {
+      simple_mtx_lock(&nvdev->vm_lock);
+      util_vma_heap_free(&nvdev->vma_heap, va, bo->size);
+      simple_mtx_unlock(&nvdev->vm_lock);
+      return ret;
+   }
+
+   bo->offset = va;
+   return 0;
+}
+
+static void
+vm_unmap_locked(struct nouveau_device_priv *nvdev, uint64_t va, uint64_t size)
+{
+   simple_mtx_assert_locked(&nvdev->vm_lock);
+   dbg(2, "unmap %#"PRIx64"+%#"PRIx64"\n", va, size);
+   /* an unmap that fails leaves the mapping, so leak the VA rather than reuse it */
+   if (!vm_bind_op(nvdev, DRM_NOUVEAU_VM_BIND_OP_UNMAP, 0, va, size, 0))
+      util_vma_heap_free(&nvdev->vma_heap, va, size);
+}
+
+static void
+vm_reap_locked(struct nouveau_device_priv *nvdev)
+{
+   list_for_each_entry_safe(struct nouveau_vm_zombie, z, &nvdev->vm_zombies, head) {
+      if (!vm_point_done(nvdev, z->point))
+         continue;
+      vm_unmap_locked(nvdev, z->va, z->size);
+      list_del(&z->head);
+      free(z);
+   }
+}
+
+/* The GPU may still use the VA, so it is only unmapped once the bo is idle. */
+static void
+vm_release(struct nouveau_device_priv *nvdev, struct nouveau_bo *bo)
+{
+   struct nouveau_bo_priv *nvbo = nouveau_bo(bo);
+
+   /* a legacy bo's offset is the kernel's, not from vma_heap */
+   if (!nvdev->vm_bind)
+      return;
+   if (nvbo->dmabuf_fd1)
+      close(nvbo->dmabuf_fd1 - 1);
+   if (!bo->offset)
+      return;
+
+   simple_mtx_lock(&nvdev->vm_lock);
+   struct nouveau_vm_zombie *z;
+   if (vm_point_done(nvdev, nvbo->last_point)) {
+      vm_unmap_locked(nvdev, bo->offset, bo->size);
+   } else if ((z = malloc(sizeof(*z)))) {
+      z->va = bo->offset;
+      z->size = bo->size;
+      z->point = nvbo->last_point;
+      list_addtail(&z->head, &nvdev->vm_zombies);
+   }
+   simple_mtx_unlock(&nvdev->vm_lock);
 }
 
 static void
@@ -684,6 +903,16 @@ nouveau_bo_wrap_locked(struct nouveau_device *dev, uint32_t handle,
       nvbo->base.device = dev;
       bo_info(&nvbo->base, &req);
       nvbo->name = name;
+      if (nvdev->vm_bind) {
+         nvbo->base.offset = 0;
+         ret = vm_map(nvdev, &nvbo->base,
+                      nvbo->base.size >= NOUVEAU_BIG_PAGE ? NOUVEAU_BIG_PAGE : 0,
+                      nvbo->base.config.nvc0.memtype);
+         if (ret) {
+            free(nvbo);
+            return ret;
+         }
+      }
       list_add(&nvbo->head, &nvdev->bo_list);
       *pbo = &nvbo->base;
       return 0;
@@ -753,6 +982,7 @@ nouveau_bo_cache_put(struct nouveau_device_priv *nvdev, struct nouveau_bo *bo)
       nvdev->bo_cache_nr--;
       nvdev->bo_cache_bytes -= old->size;
       drmCloseBufferHandle(drm->fd, old->handle);
+      vm_release(nvdev, old);
       free(nouveau_bo(old));
    }
 
@@ -780,6 +1010,7 @@ nouveau_bo_cache_fini(struct nouveau_device_priv *nvdev)
    while (nvdev->bo_cache_nr) {
       struct nouveau_bo *bo = nvdev->bo_cache[--nvdev->bo_cache_nr];
       drmCloseBufferHandle(drm->fd, bo->handle);
+      vm_release(nvdev, bo);
       free(nouveau_bo(bo));
    }
    nvdev->bo_cache_bytes = 0;
@@ -794,6 +1025,7 @@ nouveau_bo_new(struct nouveau_device *dev, uint32_t flags, uint32_t align, uint6
    struct nouveau_device_priv *nvdev = nouveau_device(dev);
    struct drm_nouveau_gem_new req = {};
    struct drm_nouveau_gem_info *info = &req.info;
+   uint32_t req_align = align;
    int ret;
 
    if (nouveau_bo_cache_get(nvdev, flags, align, size, config, pbo))
@@ -828,7 +1060,24 @@ nouveau_bo_new(struct nouveau_device *dev, uint32_t flags, uint32_t align, uint6
    if (!(bo->flags & NOUVEAU_BO_CONTIG))
       info->tile_flags = NOUVEAU_GEM_TILE_NONCONTIG;
 
-   info->size = bo->size;
+   if (nvdev->vm_bind) {
+      if (!(bo->flags & NOUVEAU_BO_SHARED)) {
+         info->domain |= NOUVEAU_GEM_DOMAIN_NO_SHARE;
+         nvbo->no_share = true;
+      }
+      /* ponytail: every CPU mapping is WC, so readback is uncached; add a
+       * cached domain + invalidate for staging reads if that shows up */
+      if (!(bo->flags & NOUVEAU_BO_COHERENT))
+         info->domain |= NOUVEAU_GEM_DOMAIN_WC;
+      /* the kernel only picks a big page for a big-page-aligned bo */
+      if (size >= NOUVEAU_BIG_PAGE)
+         align = MAX2(align, NOUVEAU_BIG_PAGE);
+      if (align >= NOUVEAU_BIG_PAGE)
+         info->size = align64(size, align);
+   }
+
+   if (!info->size)
+      info->size = bo->size;
    req.align = align;
 
    if (config) {
@@ -851,9 +1100,18 @@ nouveau_bo_new(struct nouveau_device *dev, uint32_t flags, uint32_t align, uint6
 
    bo_info(bo, info);
 
+   if (nvdev->vm_bind) {
+      ret = vm_map(nvdev, bo, align, bo->config.nvc0.memtype);
+      if (ret) {
+         drmCloseBufferHandle(drm->fd, bo->handle);
+         free(nvbo);
+         return ret;
+      }
+   }
+
    nvbo->alloc_size = size;
    nvbo->alloc_flags = flags;
-   nvbo->alloc_align = align;
+   nvbo->alloc_align = req_align;
    nvbo->cacheable = !config && size <= NOUVEAU_BO_CACHE_MAX_SIZE;
 
    *pbo = bo;
@@ -882,6 +1140,7 @@ nouveau_bo_del(struct nouveau_bo *bo)
    }
    if (bo->map)
       os_munmap(bo->map, bo->size);
+   vm_release(nvdev, bo);
    free(nvbo);
 }
 
@@ -1045,6 +1304,30 @@ nouveau_bo_is_lost(struct nouveau_bo *bo)
    return nouveau_bo(bo)->lost;
 }
 
+bool
+nouveau_bo_is_private(struct nouveau_bo *bo)
+{
+   return nouveau_bo(bo)->no_share;
+}
+
+bool
+nouveau_device_vm_bind(struct nouveau_device *dev)
+{
+   return nouveau_device(dev)->vm_bind;
+}
+
+int
+nouveau_bo_wait_exec(struct nouveau_bo *bo, bool noblock)
+{
+   struct nouveau_device_priv *nvdev = nouveau_device(bo->device);
+
+   if (nouveau_bo(bo)->lost)
+      return -EIO;
+   if (!nvdev->vm_bind)
+      return 0;
+   return vm_point_wait(nvdev, nouveau_bo(bo)->last_point, noblock);
+}
+
 int
 nouveau_bo_wait(struct nouveau_bo *bo, uint32_t access, struct nouveau_client *client)
 {
@@ -1068,6 +1351,16 @@ nouveau_bo_wait(struct nouveau_bo *bo, uint32_t access, struct nouveau_client *c
 
    if (!nvbo->head.next && !(nvbo->access & NOUVEAU_BO_WR) && !(access & NOUVEAU_BO_WR))
       return 0;
+
+   /* A private bo shares the VM's reservation object, which every EXEC
+    * fences, so CPU_PREP would wait for everything: wait for its own point. */
+   if (nouveau_device(bo->device)->vm_bind && !nvbo->head.next) {
+      ret = vm_point_wait(nouveau_device(bo->device), nvbo->last_point,
+                          access & NOUVEAU_BO_NOBLOCK);
+      if (!ret)
+         nvbo->access = 0;
+      return ret;
+   }
 
    req.handle = bo->handle;
    req.flags = 0;
@@ -1293,6 +1586,142 @@ pushbuf_dump(struct nouveau_device *dev,
 }
 
 static int
+pushbuf_exec(struct nouveau_pushbuf *push, struct nouveau_pushbuf_krec *krec, int channel,
+             uint64_t *point)
+{
+   struct nouveau_device_priv *nvdev = nouveau_device(push->client->device);
+   struct nouveau_drm *drm = nouveau_drm(&nvdev->base.object);
+   struct drm_nouveau_exec_push epush[NOUVEAU_GEM_MAX_PUSH];
+   struct drm_nouveau_sync wait[2];
+   uint64_t dep = 0;
+   struct drm_nouveau_sync sig = {
+      .flags = DRM_NOUVEAU_SYNC_TIMELINE_SYNCOBJ,
+      .handle = nvdev->syncobj,
+   };
+   struct drm_nouveau_exec req = {
+      .channel = channel,
+      .push_count = krec->nr_push,
+      .push_ptr = (uintptr_t)epush,
+      .sig_count = 1,
+      .sig_ptr = (uintptr_t)&sig,
+   };
+   int implicit_fd = -1;
+   int ret, i;
+
+   for (i = 0; i < krec->nr_push; i++) {
+      struct drm_nouveau_gem_pushbuf_push *kpsh = &krec->push[i];
+      struct nouveau_bo *bo = (void *)(uintptr_t)krec->buffer[kpsh->bo_index].user_priv;
+
+      epush[i].va = bo->offset + kpsh->offset;
+      epush[i].va_len = kpsh->length & ~NOUVEAU_GEM_PUSHBUF_NO_PREFETCH;
+      epush[i].flags = (kpsh->length & NOUVEAU_GEM_PUSHBUF_NO_PREFETCH) ?
+                       DRM_NOUVEAU_EXEC_PUSH_NO_PREFETCH : 0;
+   }
+
+   /* EXEC fences every shared bo but waits on none of them, so a dependency
+    * that cannot be collected fails the submit. */
+   for (i = 0; i < krec->nr_buffer; i++) {
+      struct drm_nouveau_gem_pushbuf_bo *kref = &krec->buffer[i];
+      struct nouveau_bo_priv *nvbo = (void *)(uintptr_t)kref->user_priv;
+      struct dma_buf_export_sync_file ex = {
+         .flags = kref->write_domains ? DMA_BUF_SYNC_RW : DMA_BUF_SYNC_READ,
+      };
+      int fd;
+
+      if (!nvbo->head.next)
+         continue;
+      if (!nvbo->dmabuf_fd1) {
+         if (drmPrimeHandleToFD(drm->fd, nvbo->base.handle, DRM_CLOEXEC | DRM_RDWR, &fd))
+            goto err;
+         nvbo->dmabuf_fd1 = fd + 1;
+      }
+      if (drmIoctl(nvbo->dmabuf_fd1 - 1, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &ex))
+         goto err;
+      if (implicit_fd < 0) {
+         implicit_fd = ex.fd;
+         continue;
+      }
+      fd = sync_merge("nouveau", implicit_fd, ex.fd);
+      ret = -errno;
+      close(ex.fd);
+      if (fd < 0)
+         goto err_ret;
+      close(implicit_fd);
+      implicit_fd = fd;
+   }
+
+   simple_mtx_lock(&nvdev->vm_lock);
+   if (implicit_fd >= 0) {
+      ret = drmSyncobjImportSyncFile(drm->fd, nvdev->implicit_syncobj, implicit_fd) ? -errno : 0;
+      close(implicit_fd);
+      if (ret) {
+         simple_mtx_unlock(&nvdev->vm_lock);
+         return ret;
+      }
+      wait[req.wait_count++] = (struct drm_nouveau_sync) {
+         .flags = DRM_NOUVEAU_SYNC_SYNCOBJ,
+         .handle = nvdev->implicit_syncobj,
+      };
+   }
+   /* A channel runs its own jobs in order; another channel's are waited for
+    * where they access the same bo, a write against any access, and between
+    * ordered pushbufs.  A timeline point signals after all earlier ones, so
+    * the latest such point covers them all. */
+   if (nouveau_pushbuf(push)->ordered && nvdev->order_channel != channel)
+      dep = nvdev->order_point;
+   for (i = 0; i < krec->nr_buffer; i++) {
+      struct nouveau_bo_priv *nvbo = (void *)(uintptr_t)krec->buffer[i].user_priv;
+
+      if (nvbo->write_channel != channel)
+         dep = MAX2(dep, nvbo->write_point);
+      if (krec->buffer[i].write_domains)
+         dep = MAX2(dep, nvbo->last_channel != channel ? nvbo->last_point
+                                                       : nvbo->other_point);
+   }
+   if (dep > p_atomic_read(&nvdev->timeline_done)) {
+      wait[req.wait_count++] = (struct drm_nouveau_sync) {
+         .flags = DRM_NOUVEAU_SYNC_TIMELINE_SYNCOBJ,
+         .handle = nvdev->syncobj,
+         .timeline_value = dep,
+      };
+   }
+   req.wait_ptr = (uintptr_t)wait;
+   sig.timeline_value = nvdev->timeline + 1;
+   ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_EXEC, &req, sizeof(req));
+   if (!ret) {
+      *point = ++nvdev->timeline;
+      if (nouveau_pushbuf(push)->ordered) {
+         nvdev->order_channel = channel;
+         nvdev->order_point = *point;
+      }
+      for (i = 0; i < krec->nr_buffer; i++) {
+         struct nouveau_bo_priv *nvbo = (void *)(uintptr_t)krec->buffer[i].user_priv;
+
+         if (nvbo->last_channel != channel)
+            nvbo->other_point = nvbo->last_point;
+         nvbo->last_point = *point;
+         nvbo->last_channel = channel;
+         if (krec->buffer[i].write_domains) {
+            nvbo->write_point = *point;
+            nvbo->write_channel = channel;
+         }
+      }
+   }
+   if (!list_is_empty(&nvdev->vm_zombies))
+      vm_reap_locked(nvdev);
+   simple_mtx_unlock(&nvdev->vm_lock);
+
+   return ret;
+
+err:
+   ret = -errno;
+err_ret:
+   if (implicit_fd >= 0)
+      close(implicit_fd);
+   return ret;
+}
+
+static int
 pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
 {
    struct nouveau_pushbuf_priv *nvpb = nouveau_pushbuf(push);
@@ -1304,6 +1733,7 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
    struct drm_nouveau_gem_pushbuf req;
    int channel = chan->handle;
    struct nouveau_bo *bo;
+   uint64_t point = 0;
    int krec_id = 0;
    int ret = 0, i;
 
@@ -1334,27 +1764,33 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
       if (dbg_on(0))
          pushbuf_dump(dev, krec, krec_id++, channel);
 
-      /* written by every ordered submit, see nouveau_pushbuf_order() */
-      if (nvpb->ordered) {
+      if (nouveau_device(dev)->vm_bind) {
+         ret = pushbuf_exec(push, krec, channel, &point);
+         if (!ret && dbg_on(1))
+            vm_point_wait(nouveau_device(dev), point, false);
+      } else {
          struct nouveau_bo *obo = nouveau_device(dev)->order_bo;
 
-         krec->buffer[req.nr_buffers++] = (struct drm_nouveau_gem_pushbuf_bo) {
-            .user_priv = (uintptr_t)obo,
-            .handle = obo->handle,
-            .valid_domains = NOUVEAU_GEM_DOMAIN_GART,
-            .write_domains = NOUVEAU_GEM_DOMAIN_GART,
-            .presumed = {
-               .valid = 1,
-               .domain = NOUVEAU_GEM_DOMAIN_GART,
-               .offset = obo->offset,
-            },
-         };
+         /* written by every ordered submit, see nouveau_pushbuf_order() */
+         if (nvpb->ordered) {
+            krec->buffer[req.nr_buffers++] = (struct drm_nouveau_gem_pushbuf_bo) {
+               .user_priv = (uintptr_t)obo,
+               .handle = obo->handle,
+               .valid_domains = NOUVEAU_GEM_DOMAIN_GART,
+               .write_domains = NOUVEAU_GEM_DOMAIN_GART,
+               .presumed = {
+                  .valid = 1,
+                  .domain = NOUVEAU_GEM_DOMAIN_GART,
+                  .offset = obo->offset,
+               },
+            };
+         }
+         ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_GEM_PUSHBUF, &req, sizeof(req));
+         nvpb->suffix0 = req.suffix0;
+         nvpb->suffix1 = req.suffix1;
+         dev->vram_limit = (req.vram_available * nouveau_device(dev)->vram_limit_percent) / 100;
+         dev->gart_limit = (req.gart_available * nouveau_device(dev)->gart_limit_percent) / 100;
       }
-      ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_GEM_PUSHBUF, &req, sizeof(req));
-      nvpb->suffix0 = req.suffix0;
-      nvpb->suffix1 = req.suffix1;
-      dev->vram_limit = (req.vram_available * nouveau_device(dev)->vram_limit_percent) / 100;
-      dev->gart_limit = (req.gart_available * nouveau_device(dev)->gart_limit_percent) / 100;
 
       if (ret) {
          err("kernel rejected pushbuf: %s\n", strerror(-ret));
@@ -1745,9 +2181,11 @@ nouveau_pushbuf_new(struct nouveau_client *client, struct nouveau_object *chan, 
     */
    req.channel = chan->handle;
    req.nr_push = 0;
-   ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_GEM_PUSHBUF, &req, sizeof(req));
-   if (ret)
-      return ret;
+   if (!nouveau_device(client->device)->vm_bind) {
+      ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_GEM_PUSHBUF, &req, sizeof(req));
+      if (ret)
+         return ret;
+   }
 
    nvpb = calloc(1, sizeof(*nvpb) + nr * sizeof(*nvpb->bos));
    if (!nvpb)
@@ -1881,7 +2319,7 @@ nouveau_pushbuf_order(struct nouveau_pushbuf *push)
 
    /* the kernel orders the writers of a bo across channels */
    simple_mtx_lock(&nvdev->lock);
-   if (!nvdev->order_bo)
+   if (!nvdev->vm_bind && !nvdev->order_bo)
       ret = nouveau_bo_new(&nvdev->base, NOUVEAU_BO_GART, 0, 4096, NULL, &nvdev->order_bo);
    simple_mtx_unlock(&nvdev->lock);
    if (!ret)
@@ -1952,7 +2390,9 @@ nouveau_pushbuf_space(struct nouveau_pushbuf *push, uint32_t dwords, uint32_t re
     */
    if (bo ||
        krec->nr_reloc + relocs >= NOUVEAU_GEM_MAX_RELOCS ||
-       krec->nr_push + pushes >= NOUVEAU_GEM_MAX_PUSH) {
+       krec->nr_push + pushes >= (nouveau_device(client->device)->vm_bind ?
+                                  nouveau_device(client->device)->exec_push_max :
+                                  NOUVEAU_GEM_MAX_PUSH)) {
       if (nvpb->bo && krec->nr_buffer)
          pushbuf_flush(push);
       flushed = true;

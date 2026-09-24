@@ -180,6 +180,17 @@ nvc0_choose_tiled_storage_type(struct pipe_screen *pscreen,
    return tile_flags;
 }
 
+static bool
+nvc0_kind_is_compressed(uint32_t kind)
+{
+   switch (kind) {
+   case 0x00: case 0x01: case 0x11: case 0x46: case 0x7b: case 0xc3: case 0xfe:
+      return false;
+   default:
+      return true;
+   }
+}
+
 static uint32_t
 nvc0_mt_choose_storage_type(struct pipe_screen *pscreen,
                             const struct nv50_miptree *mt,
@@ -541,8 +552,15 @@ nvc0_miptree_create(struct pipe_screen *pscreen,
    if (mt->base.base.bind & (PIPE_BIND_CURSOR | PIPE_BIND_DISPLAY_TARGET))
       bo_flags |= NOUVEAU_BO_CONTIG;
 
-   ret = nouveau_bo_new(dev, bo_flags, 4096, mt->total_size, &bo_config,
-                        &mt->base.bo);
+   /* a modifier is only asked for to share the resource */
+   if ((pt->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+                    PIPE_BIND_CURSOR)) || count > 0)
+      bo_flags |= NOUVEAU_BO_SHARED;
+
+   /* a compressed kind only maps with a big page */
+   ret = nouveau_bo_new(dev, bo_flags,
+                        nvc0_kind_is_compressed(bo_config.nvc0.memtype) ? 1 << 16 : 4096,
+                        mt->total_size, &bo_config, &mt->base.bo);
    if (ret) {
       FREE(mt);
       return NULL;
