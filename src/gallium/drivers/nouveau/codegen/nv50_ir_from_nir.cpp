@@ -2770,6 +2770,16 @@ Converter::visit(nir_alu_instr *insn)
       mkOp3(OP_INSBF, TYPE_U32, newDefs[0], tmpH, mkImm(0x1010), tmpL);
       break;
    }
+   case nir_op_unpack_32_2x16_split_x: {
+      LValues &newDefs = convert(&insn->def);
+      mkOp2(OP_AND, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), mkImm(0xffff));
+      break;
+   }
+   case nir_op_unpack_32_2x16_split_y: {
+      LValues &newDefs = convert(&insn->def);
+      mkOp2(OP_SHR, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), mkImm(16));
+      break;
+   }
    case nir_op_unpack_64_2x32: {
       LValues &newDefs = convert(&insn->def);
       mkOp1(OP_SPLIT, dType, newDefs[0], getSrc(&insn->src[0]))->setDef(1, newDefs[1]);
