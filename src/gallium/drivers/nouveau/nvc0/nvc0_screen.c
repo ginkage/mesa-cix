@@ -385,7 +385,8 @@ nvc0_init_screen_caps(struct nvc0_screen *screen)
    caps->line_width_granularity = 0.1;
    caps->max_line_width =
    caps->max_line_width_aa = 10.0f;
-   caps->max_point_size = 63.0f;
+   /* what NVIDIA's own driver reports on Kepler and later */
+   caps->max_point_size = class_3d >= NVE4_3D_CLASS ? 2047.0f : 63.0f;
    caps->max_point_size_aa = 63.375f;
    caps->max_texture_anisotropy = 16.0f;
    caps->max_texture_lod_bias = 15.0f;
