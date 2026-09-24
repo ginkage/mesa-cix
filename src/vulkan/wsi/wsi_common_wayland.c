@@ -68,6 +68,10 @@
 #ifdef MAJOR_IN_SYSMACROS
 #include <sys/sysmacros.h>
 #endif
+#ifdef HAVE_LIBDRM
+#include <fcntl.h>
+#include <xf86drm.h>
+#endif
 
 struct wsi_wayland;
 
@@ -1600,6 +1604,33 @@ wsi_wl_display_finish(struct wsi_wl_display *display)
       wl_event_queue_destroy(display->queue);
 }
 
+/* The compositor's main device differs from ours: ask the driver, as the X11
+ * and display WSIs do, whether it can still present there directly. */
+static bool
+wsi_wl_can_present_on_dev(struct wsi_device *wsi, dev_t dev)
+{
+#ifdef HAVE_LIBDRM
+   drmDevicePtr device;
+   if (drmGetDeviceFromDevId(dev, 0, &device) != 0)
+      return false;
+
+   int fd = -1;
+   if (device->available_nodes & (1 << DRM_NODE_RENDER))
+      fd = open(device->nodes[DRM_NODE_RENDER], O_RDWR | O_CLOEXEC);
+   else if (device->available_nodes & (1 << DRM_NODE_PRIMARY))
+      fd = open(device->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
+   drmFreeDevice(&device);
+   if (fd < 0)
+      return false;
+
+   bool match = wsi->can_present_on_device(wsi->pdevice, fd);
+   close(fd);
+   return match;
+#else
+   return false;
+#endif
+}
+
 static VkResult
 wsi_wl_display_init(struct wsi_wayland *wsi_wl,
                     struct wsi_wl_display *display,
@@ -1681,7 +1712,8 @@ wsi_wl_display_init(struct wsi_wayland *wsi_wl,
                 minor(display->main_device) == wsi_wl->wsi->drm_info.renderMinor) ||
                (wsi_wl->wsi->drm_info.hasPrimary &&
                 major(display->main_device) == wsi_wl->wsi->drm_info.primaryMajor &&
-                minor(display->main_device) == wsi_wl->wsi->drm_info.primaryMinor);
+                minor(display->main_device) == wsi_wl->wsi->drm_info.primaryMinor) ||
+               wsi_wl_can_present_on_dev(wsi_wl->wsi, display->main_device);
          }
    }
 
