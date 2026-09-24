@@ -683,7 +683,8 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
    prog->num_barriers = info_out.numBarriers;
 
    prog->vp.need_vertex_id = info_out.io.vertexId < PIPE_MAX_SHADER_INPUTS;
-   prog->vp.need_draw_parameters = info_out.prop.vp.usesDrawParameters;
+   if (prog->type == MESA_SHADER_VERTEX)
+      prog->vp.need_draw_parameters = info_out.prop.vp.usesDrawParameters;
 
    if (info_out.io.edgeFlagOut < PIPE_MAX_ATTRIBS)
       info_out.out[info_out.io.edgeFlagOut].mask = 0; /* for headergen */
