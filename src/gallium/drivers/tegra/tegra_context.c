@@ -582,6 +582,14 @@ tegra_set_sampler_views(struct pipe_context *pcontext, mesa_shader_stage shader,
 }
 
 static void
+tegra_set_patch_vertices(struct pipe_context *pcontext, uint8_t patch_vertices)
+{
+   struct tegra_context *context = to_tegra_context(pcontext);
+
+   context->gpu->set_patch_vertices(context->gpu, patch_vertices);
+}
+
+static void
 tegra_set_tess_state(struct pipe_context *pcontext,
                      const float default_outer_level[4],
                      const float default_inner_level[2])
@@ -1334,6 +1342,8 @@ tegra_screen_context_create(struct pipe_screen *pscreen, void *priv,
    context->base.set_viewport_states = tegra_set_viewport_states;
    context->base.set_sampler_views = tegra_set_sampler_views;
    context->base.set_tess_state = tegra_set_tess_state;
+   if (context->gpu->set_patch_vertices)
+      context->base.set_patch_vertices = tegra_set_patch_vertices;
 
    context->base.set_debug_callback = tegra_set_debug_callback;
 
