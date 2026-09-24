@@ -7,11 +7,29 @@
 #include "nvkmd/nvkmd.h"
 #include "wsi_common.h"
 
+#include <xf86drm.h>
+
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 nvk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 {
    VK_FROM_HANDLE(nvk_physical_device, pdev, physicalDevice);
    return vk_instance_get_proc_addr_unchecked(pdev->vk.instance, pName);
+}
+
+/* Tegra's display controller imports our images directly */
+static bool
+nvk_wsi_soc_can_present_on_device(VkPhysicalDevice physicalDevice, int fd)
+{
+   drmDevicePtr device;
+   if (drmGetDevice2(fd, 0, &device) != 0)
+      return false;
+
+   bool match = device->bustype == DRM_BUS_PLATFORM ||
+                device->bustype == DRM_BUS_HOST1X;
+
+   drmFreeDevice(&device);
+
+   return match;
 }
 
 VkResult
@@ -37,6 +55,10 @@ nvk_init_wsi(struct nvk_physical_device *pdev)
    pdev->wsi_device.supports_scanout = false;
    pdev->wsi_device.supports_modifiers =
       pdev->vk.supported_extensions.table.EXT_image_drm_format_modifier;
+   if (pdev->info.type == NV_DEVICE_TYPE_SOC) {
+      pdev->wsi_device.can_present_on_device =
+         nvk_wsi_soc_can_present_on_device;
+   }
 
    pdev->vk.wsi_device = &pdev->wsi_device;
 
