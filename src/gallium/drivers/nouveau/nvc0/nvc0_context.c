@@ -284,7 +284,8 @@ nvc0_default_kick_notify(struct nouveau_context *context)
       return false;
    _nouveau_fence_update(context->screen, true);
 
-   nvc0->state.flushed = true;
+   nvc0->state.flushed_3d = true;
+   nvc0->state.flushed_cp = true;
    return true;
 }
 

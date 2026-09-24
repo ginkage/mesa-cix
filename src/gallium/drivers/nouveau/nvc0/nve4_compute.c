@@ -473,8 +473,10 @@ nve4_state_validate_cp(struct nvc0_context *nvc0, uint32_t mask)
                              ARRAY_SIZE(validate_list_cp), &nvc0->dirty_cp,
                              nvc0->bufctx_cp);
 
-   if (unlikely(nvc0->state.flushed))
+   if (unlikely(nvc0->state.flushed_cp)) {
+      nvc0->state.flushed_cp = false;
       nvc0_bufctx_fence(nvc0, nvc0->bufctx_cp, true);
+   }
    return ret;
 }
 
@@ -816,6 +818,7 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    }
 
    simple_mtx_lock(&screen->state_lock);
+   nvc0->base.kick_notify = nvc0_same_fence_kick_notify;
    ret = !nve4_state_validate_cp(nvc0, ~0);
    if (ret)
       goto out_unlock;
@@ -891,6 +894,7 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
 
 out_unlock:
    PUSH_KICK(push);
+   nvc0->base.kick_notify = nvc0_default_kick_notify;
    simple_mtx_unlock(&screen->state_lock);
 
 out:

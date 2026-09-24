@@ -935,8 +935,8 @@ nvc0_state_validate_3d(struct nvc0_context *nvc0, uint32_t mask)
                              ARRAY_SIZE(validate_list_3d), &nvc0->dirty_3d,
                              nvc0->bufctx_3d);
 
-   if (unlikely(nvc0->state.flushed)) {
-      nvc0->state.flushed = false;
+   if (unlikely(nvc0->state.flushed_3d)) {
+      nvc0->state.flushed_3d = false;
       nvc0_bufctx_fence(nvc0, nvc0->bufctx_3d, true);
    }
    return ret;

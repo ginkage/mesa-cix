@@ -562,8 +562,10 @@ nvc0_prim_gl(unsigned prim)
    }
 }
 
-static bool
-nvc0_draw_vbo_kick_notify(struct nouveau_context *context)
+/* for a kick in the middle of a draw or launch: keep the current fence, which
+ * the resources the draw references were fenced with */
+bool
+nvc0_same_fence_kick_notify(struct nouveau_context *context)
 {
    _nouveau_fence_update(context->screen, true);
    return true;
@@ -960,7 +962,7 @@ nvc0_draw_single_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
                  nvc0->seamless_cube_map ? NVC0_3D_TEX_MISC_SEAMLESS_CUBE_MAP : 0);
    }
 
-   nvc0->base.kick_notify = nvc0_draw_vbo_kick_notify;
+   nvc0->base.kick_notify = nvc0_same_fence_kick_notify;
 
    for (s = 0; s < 5 && !nvc0->cb_dirty; ++s) {
       if (nvc0->constbuf_coherent[s])

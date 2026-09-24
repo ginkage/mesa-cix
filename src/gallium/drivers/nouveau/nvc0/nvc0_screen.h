@@ -33,7 +33,9 @@ struct nvc0_context;
 struct nvc0_blitter;
 
 struct nvc0_graph_state {
-   bool flushed;
+   /* kicked since the 3D/compute bufctx was last fenced */
+   bool flushed_3d;
+   bool flushed_cp;
    bool rasterizer_discard;
    bool early_z_forced;
    bool prim_restart;
