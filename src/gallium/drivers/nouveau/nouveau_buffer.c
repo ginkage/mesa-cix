@@ -500,18 +500,9 @@ nouveau_buffer_transfer_map(struct pipe_context *pipe,
          nouveau_transfer_staging(nv, tx, true);
          map = tx->map;
       } else
-      if (nouveau_buffer_busy(buf, PIPE_MAP_READ)) {
-         if (usage & PIPE_MAP_DONTBLOCK)
-            map = NULL;
-         else
-            nouveau_buffer_sync(nv, buf, usage & PIPE_MAP_READ_WRITE);
-      } else {
-         /* It is expected that the returned buffer be a representation of the
-          * data in question, so we must copy it over from the buffer. */
-         nouveau_transfer_staging(nv, tx, true);
-         if (tx->map)
-            memcpy(tx->map, map, box->width);
-         map = tx->map;
+      if ((usage & PIPE_MAP_DONTBLOCK) ||
+          !nouveau_buffer_sync(nv, buf, usage & PIPE_MAP_READ_WRITE)) {
+         map = NULL;
       }
    }
    if (!map)
