@@ -564,7 +564,17 @@ nv50_sampler_state_create(struct pipe_context *pipe,
       so->tsc[0] |= (nvgl_comparison_op(cso->compare_func) & 0x7) << 10;
    }
 
-   f[0] = CLAMP(cso->lod_bias, -16.0f, 15.0f);
+   f[0] = cso->lod_bias;
+   /* GM20B: the blob's trilinear optimization and bias for anisotropy */
+   if (nouveau_screen(pipe->screen)->device->chipset == 0x12b &&
+       cso->max_anisotropy >= 2) {
+      if (cso->max_anisotropy >= 8) {
+         so->tsc[1] &= ~G80_TSC_1_TRILIN_OPT__MASK;
+         so->tsc[1] |= 8 << G80_TSC_1_TRILIN_OPT__SHIFT;
+      }
+      f[0] -= (cso->max_anisotropy >= 8 ? 64 : cso->max_anisotropy >= 4 ? 54 : 42) / 256.0f;
+   }
+   f[0] = CLAMP(f[0], -16.0f, 15.0f);
    so->tsc[1] |= ((int)(f[0] * 256.0f) & 0x1fff) << 12;
 
    f[0] = CLAMP(cso->min_lod, 0.0f, 15.0f);
