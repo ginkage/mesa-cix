@@ -201,7 +201,7 @@ nvc0_hw_begin_query(struct nvc0_context *nvc0, struct nvc0_query *q)
       nvc0_hw_query_get(push, q, 0x10, 0x0f005002);
       break;
    case PIPE_QUERY_TIME_ELAPSED:
-      nvc0_hw_query_get(push, q, 0x10, 0x00005002);
+      nvc0_hw_query_get(push, q, 0x10, 0x0000f012);
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS:
       nvc0_hw_query_get(push, q, 0xc0 + 0x00, 0x00801002); /* VFETCH, VERTICES */
@@ -271,7 +271,7 @@ nvc0_hw_end_query(struct nvc0_context *nvc0, struct nvc0_query *q)
       break;
    case PIPE_QUERY_TIMESTAMP:
    case PIPE_QUERY_TIME_ELAPSED:
-      nvc0_hw_query_get(push, q, 0, 0x00005002);
+      nvc0_hw_query_get(push, q, 0, 0x0000f012);
       break;
    case PIPE_QUERY_GPU_FINISHED:
       nvc0_hw_query_get(push, q, 0, 0x1000f010);
