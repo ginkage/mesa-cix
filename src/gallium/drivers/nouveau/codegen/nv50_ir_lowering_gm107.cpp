@@ -128,6 +128,7 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
    const int indirect = i->tex.rIndirectSrc >= 0;
 
    i->op = OP_TEX; // no need to clone dPdx/dPdy later
+   i->tex.liveOnly = false; // the quad's helper lanes carry the derivatives
 
    for (c = 0; c < dim; ++c)
       crd[c] = bld.getScratch();

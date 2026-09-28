@@ -3175,6 +3175,7 @@ Converter::visit(nir_tex_instr *insn)
 
       TexInstruction *texi = mkTex(op, target.getEnum(), r, s, defs, srcs);
       texi->tex.levelZero = lz;
+      texi->tex.liveOnly = insn->skip_helpers;
       texi->tex.mask = mask;
       texi->tex.bindless = bindless;
 
@@ -3473,6 +3474,12 @@ Converter::run()
    NIR_PASS(_, nir, nir_lower_bit_size, Converter::lowerBitSizeCB, this);
 
    nir_divergence_analysis(nir);
+   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
+       info->target >= NVISA_GM107_CHIPSET) {
+      nir_opt_load_skip_helpers_options skip_helpers_options = {};
+      skip_helpers_options.no_add_divergence = true;
+      NIR_PASS(_, nir, nir_opt_load_skip_helpers, &skip_helpers_options);
+   }
    NIR_PASS(_, nir, nir_convert_from_ssa, true, true);
 
    // nv50_ir emits in NIR order, so issue texture fetches before the ALU
