@@ -24,6 +24,7 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_schedule.h"
 
 #include "util/u_debug.h"
 #include "util/u_prim.h"
@@ -3473,6 +3474,16 @@ Converter::run()
 
    nir_divergence_analysis(nir);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, true);
+
+   // nv50_ir emits in NIR order, so issue texture fetches before the ALU
+   // that doesn't depend on them, then put the stores back at the end
+   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
+       info->target >= NVISA_GM107_CHIPSET) {
+      nir_schedule_options sched_options = {};
+      sched_options.threshold = 32;
+      NIR_PASS(_, nir, nir_schedule, &sched_options);
+      NIR_PASS(_, nir, nv_nir_move_stores_to_end);
+   }
 
    // Garbage collect dead instructions
    nir_sweep(nir);
