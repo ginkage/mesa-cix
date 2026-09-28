@@ -1028,9 +1028,9 @@ nvc0_set_vertex_buffers(struct pipe_context *pipe,
 
     unsigned clear_mask =
        last_count > count ? BITFIELD_RANGE(count, last_count - count) : 0;
-    nvc0->vbo_user &= clear_mask;
-    nvc0->constant_vbos &= clear_mask;
-    nvc0->vtxbufs_coherent &= clear_mask;
+    nvc0->vbo_user &= ~clear_mask;
+    nvc0->constant_vbos &= ~clear_mask;
+    nvc0->vtxbufs_coherent &= ~clear_mask;
 
     if (!vb) {
        clear_mask = ~u_bit_consecutive(0, count);
