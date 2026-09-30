@@ -276,27 +276,79 @@ nvc0_update_user_vbufs(struct nvc0_context *nvc0)
    nvc0->base.vbo_dirty = true;
 }
 
+/* nouveau_scratch_data() takes base = lo - min and size = hi - lo as unsigned
+ * and aligns base + size up to 4 */
+static inline bool
+nvc0_user_vbuf_span_ok(uintptr_t min, uintptr_t lo, uintptr_t hi)
+{
+   return min <= lo && lo <= hi && hi - min <= UINT_MAX - 3;
+}
+
 static void
 nvc0_update_user_vbufs_shared(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    uint32_t mask = nvc0->vbo_user & ~nvc0->constant_vbos;
+   /* upload overlapping (interleaved) client arrays only once; the arrays
+    * may come from unrelated allocations, so compare them as addresses */
+   struct {
+      uintptr_t lo, hi, min;
+      uint64_t address;
+   } grp[PIPE_MAX_ATTRIBS];
+   uint8_t grp_of[PIPE_MAX_ATTRIBS];
+   unsigned num_grps = 0;
+
+   for (uint32_t m = mask; m; ) {
+      const int b = ffs(m) - 1;
+      const uintptr_t user = (uintptr_t)nvc0->vtxbuf[b].buffer.user;
+      uint32_t base, size;
+      unsigned g;
+      m &= ~(1 << b);
+
+      nvc0_user_vbuf_range(nvc0, b, &base, &size);
+      const uintptr_t lo = user + base, hi = lo + size;
+      for (g = 0; g < num_grps; ++g) {
+         if (lo < grp[g].hi && hi > grp[g].lo && !((user - grp[g].min) & 3) &&
+             nvc0_user_vbuf_span_ok(user, lo, hi) &&
+             nvc0_user_vbuf_span_ok(grp[g].min, grp[g].lo, grp[g].hi) &&
+             nvc0_user_vbuf_span_ok(MIN2(user, grp[g].min),
+                                    MIN2(lo, grp[g].lo), MAX2(hi, grp[g].hi)))
+            break;
+      }
+      if (g == num_grps) {
+         num_grps++;
+         grp[g].lo = lo;
+         grp[g].hi = hi;
+         grp[g].min = user;
+      } else {
+         grp[g].lo = MIN2(grp[g].lo, lo);
+         grp[g].hi = MAX2(grp[g].hi, hi);
+         grp[g].min = MIN2(grp[g].min, user);
+      }
+      grp_of[b] = g;
+   }
+   for (unsigned g = 0; g < num_grps; ++g) {
+      struct nouveau_bo *bo;
+      grp[g].address = nouveau_scratch_data(&nvc0->base, (const void *)grp[g].min,
+                                            grp[g].lo - grp[g].min,
+                                            grp[g].hi - grp[g].lo, &bo);
+      if (bo)
+         BCTX_REFN_bo(nvc0->bufctx_3d, 3D_VTX_TMP,
+                      NOUVEAU_BO_RD | NOUVEAU_BO_GART, bo);
+      NOUVEAU_DRV_STAT(&nvc0->screen->base, user_buffer_upload_bytes,
+                       grp[g].hi - grp[g].lo);
+   }
 
    PUSH_SPACE(push, nvc0->num_vtxbufs * 8);
    while (mask) {
-      struct nouveau_bo *bo;
-      const uint32_t bo_flags = NOUVEAU_BO_RD | NOUVEAU_BO_GART;
       uint64_t address;
       uint32_t base, size;
       const int b = ffs(mask) - 1;
       mask &= ~(1 << b);
 
       nvc0_user_vbuf_range(nvc0, b, &base, &size);
-
-      address = nouveau_scratch_data(&nvc0->base, nvc0->vtxbuf[b].buffer.user,
-                                     base, size, &bo);
-      if (bo)
-         BCTX_REFN_bo(nvc0->bufctx_3d, 3D_VTX_TMP, bo_flags, bo);
+      address = grp[grp_of[b]].address +
+         ((uintptr_t)nvc0->vtxbuf[b].buffer.user - grp[grp_of[b]].min);
 
       BEGIN_1IC0(push, NVC0_3D(MACRO_VERTEX_ARRAY_SELECT), 5);
       PUSH_DATA (push, b);
@@ -304,8 +356,6 @@ nvc0_update_user_vbufs_shared(struct nvc0_context *nvc0)
       PUSH_DATA (push, address + base + size - 1);
       PUSH_DATAh(push, address);
       PUSH_DATA (push, address);
-
-      NOUVEAU_DRV_STAT(&nvc0->screen->base, user_buffer_upload_bytes, size);
    }
 
    mask = nvc0->state.constant_elts;
