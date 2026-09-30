@@ -377,7 +377,13 @@ TargetGM107::runLegalizePass(Program *prog, CGStage stage) const
    } else
    if (stage == CG_STAGE_SSA) {
       GM107LegalizeSSA pass;
-      return pass.run(prog, false, true);
+      if (!pass.run(prog, false, true))
+         return false;
+      if (prog->getType() == Program::TYPE_FRAGMENT) {
+         GM107PreRAScheduling sched;
+         return sched.run(prog, false, true);
+      }
+      return true;
    }
    return false;
 }

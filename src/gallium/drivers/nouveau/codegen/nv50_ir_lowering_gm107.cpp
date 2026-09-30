@@ -28,6 +28,9 @@
 #include "nv50_ir_lowering_gm107.h"
 
 #include <limits>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 namespace nv50_ir {
 
@@ -107,6 +110,463 @@ GM107LegalizeSSA::visit(Instruction *i)
    default:
       break;
    }
+   return true;
+}
+
+static bool
+isDualIssueSecond(const Instruction *insn)
+{
+   switch (insn->op) {
+   case OP_LINTERP:
+   case OP_PINTERP:
+   case OP_RCP:
+   case OP_RSQ:
+   case OP_LG2:
+   case OP_EX2:
+   case OP_SIN:
+   case OP_COS:
+      return typeSizeof(insn->dType) <= 4 && !insn->defExists(1);
+   default:
+      return false;
+   }
+}
+
+static bool
+isDualIssueFirst(const Instruction *insn)
+{
+   const OpClass cl = Target::operationClass[insn->op];
+   if (cl != OPCLASS_ARITH && cl != OPCLASS_COMPARE && cl != OPCLASS_MOVE)
+      return false;
+   if (insn->fixed || typeSizeof(insn->dType) > 4 || !insn->defExists(0) ||
+       insn->defExists(1) || insn->getDef(0)->reg.file != FILE_GPR)
+      return false;
+   return true;
+}
+
+// Pre-RA list scheduler for Maxwell, see GM107PreRAScheduling
+namespace {
+
+struct SchedNode {
+   Instruction *insn;
+   std::vector<std::pair<int, int> > succs; // node, latency
+   int npreds = 0;
+   int height = 0;
+   int earliest = 0;
+   int order;
+   bool done = false;
+   bool varLat = false;
+};
+
+static bool
+schedPureValue(const Value *v)
+{
+   switch (v->reg.file) {
+   case FILE_GPR:
+   case FILE_PREDICATE:
+      return v->join->reg.data.id < 0;
+   case FILE_IMMEDIATE:
+   case FILE_MEMORY_CONST:
+   case FILE_SHADER_INPUT:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+isSchedulable(const Instruction *i)
+{
+   if (i->fixed || i->join || i->asFlow() || i->perPatch)
+      return false;
+   switch (Target::operationClass[i->op]) {
+   case OPCLASS_MOVE:
+      if (i->op != OP_MOV)
+         return false;
+      break;
+   case OPCLASS_ARITH:
+   case OPCLASS_SHIFT:
+   case OPCLASS_LOGIC:
+   case OPCLASS_COMPARE:
+   case OPCLASS_CONVERT:
+   case OPCLASS_SFU:
+   case OPCLASS_BITFIELD:
+      break;
+   case OPCLASS_TEXTURE:
+      if (i->op == OP_TXD || i->op == OP_TEXPREP || i->op == OP_TEXCSAA)
+         return false;
+      break;
+   case OPCLASS_PSEUDO:
+      if (i->op != OP_SPLIT && i->op != OP_MERGE)
+         return false;
+      break;
+   case OPCLASS_LOAD:
+      if (i->op != OP_LOAD || i->src(0).getFile() != FILE_MEMORY_CONST)
+         return false;
+      break;
+   default:
+      return false;
+   }
+   for (int d = 0; i->defExists(d); ++d)
+      if (!schedPureValue(i->getDef(d)) ||
+          i->getDef(d)->reg.file == FILE_IMMEDIATE ||
+          i->getDef(d)->defs.size() != 1)
+         return false;
+   for (int s = 0; i->srcExists(s); ++s)
+      if (!schedPureValue(i->getSrc(s)))
+         return false;
+   return true;
+}
+
+static int
+schedLatency(const Instruction *i, bool &varLat)
+{
+   varLat = true;
+   switch (Target::operationClass[i->op]) {
+   case OPCLASS_TEXTURE:
+      return 100;
+   case OPCLASS_LOAD:
+      return 30;
+   case OPCLASS_PSEUDO:
+      varLat = false;
+      return 0;
+   default:
+      break;
+   }
+   switch (i->op) {
+   case OP_LINTERP:
+   case OP_PINTERP:
+      return 16;
+   case OP_RCP:
+   case OP_RSQ:
+   case OP_LG2:
+   case OP_SIN:
+   case OP_COS:
+   case OP_EX2:
+   case OP_SQRT:
+      return 16;
+   default:
+      break;
+   }
+   varLat = i->dType == TYPE_F64 || i->sType == TYPE_F64;
+   return varLat ? 20 : 6;
+}
+
+static int
+gprSize(const Value *v)
+{
+   return v->reg.file == FILE_GPR ? (v->reg.size + 3) / 4 : 0;
+}
+
+class GM107PreRASched
+{
+public:
+   GM107PreRASched(BasicBlock *bb) : bb(bb) { }
+   void run();
+private:
+   void schedRegion(std::vector<Instruction *> &, Instruction *before);
+   BasicBlock *bb;
+};
+
+void
+GM107PreRASched::run()
+{
+   std::vector<Instruction *> region;
+   for (Instruction *i = bb->getEntry(), *next; i; i = next) {
+      next = i->next;
+      if (isSchedulable(i)) {
+         region.push_back(i);
+         continue;
+      }
+      schedRegion(region, i);
+      region.clear();
+   }
+   schedRegion(region, NULL);
+}
+
+void
+GM107PreRASched::schedRegion(std::vector<Instruction *> &insns, Instruction *before)
+{
+   // below this, reordering costs more than it gains (particle shaders)
+   const int n = insns.size();
+   if (n < 24)
+      return;
+
+   std::unordered_map<const Instruction *, int> idx;
+   for (int k = 0; k < n; ++k)
+      idx[insns[k]] = k;
+
+   std::vector<SchedNode> nodes(n);
+   std::vector<int> lat(n);
+   for (int k = 0; k < n; ++k) {
+      nodes[k].insn = insns[k];
+      nodes[k].order = k;
+      lat[k] = schedLatency(insns[k], nodes[k].varLat);
+   }
+   for (int k = 0; k < n; ++k) {
+      Instruction *i = insns[k];
+      std::set<int> preds;
+      for (int s = 0; i->srcExists(s); ++s) {
+         Instruction *d = i->getSrc(s)->getUniqueInsn();
+         auto it = d ? idx.find(d) : idx.end();
+         if (it != idx.end() && it->second != k)
+            preds.insert(it->second);
+      }
+      for (int p : preds) {
+         nodes[p].succs.push_back(std::make_pair(k, lat[p]));
+         nodes[k].npreds++;
+      }
+   }
+   for (int k = n - 1; k >= 0; --k) {
+      int h = 0;
+      for (auto &e : nodes[k].succs)
+         h = MAX2(h, nodes[e.first].height);
+      nodes[k].height = h + lat[k];
+   }
+
+   // register pressure, relative to the start of the region
+   std::set<const Instruction *> earlier;
+   for (const Instruction *i = insns[0]->prev; i; i = i->prev)
+      earlier.insert(i);
+   std::unordered_map<const Value *, int> remUses;
+   std::set<const Value *> liveOut;
+   for (int k = 0; k < n; ++k) {
+      Instruction *i = insns[k];
+      for (int s = 0; i->srcExists(s); ++s) {
+         const Value *v = i->getSrc(s);
+         if (v->reg.file != FILE_GPR || remUses.count(v))
+            continue;
+         int in = 0;
+         bool out = false;
+         for (const ValueRef *u : v->uses) {
+            const Instruction *ui = u->getInsn();
+            if (idx.count(ui))
+               ++in;
+            else if (!earlier.count(ui))
+               out = true;
+         }
+         remUses[v] = in;
+         if (out)
+            liveOut.insert(v);
+      }
+      for (int d = 0; i->defExists(d); ++d) {
+         const Value *v = i->getDef(d);
+         if (v->reg.file != FILE_GPR || remUses.count(v))
+            continue;
+         int in = 0;
+         bool out = false;
+         for (const ValueRef *u : v->uses) {
+            if (idx.count(u->getInsn()))
+               ++in;
+            else
+               out = true;
+         }
+         remUses[v] = in;
+         if (out || !in)
+            liveOut.insert(v);
+      }
+   }
+   auto delta = [&](int k, std::unordered_map<const Value *, int> &rem) {
+      const Instruction *i = insns[k];
+      int dp = 0;
+      for (int d = 0; i->defExists(d); ++d)
+         if (!i->getDef(d)->uses.empty() || liveOut.count(i->getDef(d)))
+            dp += gprSize(i->getDef(d));
+      std::set<const Value *> seen;
+      for (int s = 0; i->srcExists(s); ++s) {
+         const Value *v = i->getSrc(s);
+         if (v->reg.file != FILE_GPR || !seen.insert(v).second)
+            continue;
+         int uses = 0;
+         for (int t = 0; i->srcExists(t); ++t)
+            uses += i->getSrc(t) == v;
+         if (rem[v] == uses && !liveOut.count(v))
+            dp -= gprSize(v);
+      }
+      return dp;
+   };
+   auto commit = [&](int k, std::unordered_map<const Value *, int> &rem) {
+      const Instruction *i = insns[k];
+      for (int s = 0; i->srcExists(s); ++s)
+         if (i->getSrc(s)->reg.file == FILE_GPR)
+            rem[i->getSrc(s)]--;
+   };
+
+   int limit, soft, press = 0, peak = 0;
+   {
+      std::unordered_map<const Value *, int> rem = remUses;
+      int peak = 0;
+      for (int k = 0; k < n; ++k) {
+         press += delta(k, rem);
+         commit(k, rem);
+         peak = MAX2(peak, press);
+      }
+      limit = peak;
+      press = 0;
+   }
+
+   const int bars = 6, sfuTp = 2; // scoreboards, cycles per MUFU op
+   // a scoreboard is held from issue to the first consumer in the region
+   std::vector<bool> needsBar(n);
+   for (int k = 0; k < n; ++k)
+      needsBar[k] = nodes[k].varLat && !nodes[k].succs.empty();
+   std::vector<int> outstanding; // var-lat producers nobody waited for yet
+   std::vector<int> order;
+   int cycle, sfuFree;
+   auto isSfu = [&](int k) {
+      return Target::operationClass[insns[k]->op] == OPCLASS_SFU && nodes[k].varLat;
+   };
+   auto ready = [&](int k) { // earliest issue cycle, -1 if blocked
+      if (needsBar[k] && (int)outstanding.size() >= bars)
+         return -1;
+      int t = nodes[k].earliest;
+      if (isSfu(k))
+         t = MAX2(t, sfuFree);
+      return t;
+   };
+   auto better = [&](int a, int b) { // is a a better pick than b
+      if (b < 0)
+         return true;
+      const int da = delta(a, remUses), db = delta(b, remUses);
+      const bool ova = press + da > soft, ovb = press + db > soft;
+      if (ova != ovb)
+         return !ova;
+      if (ova && da != db)
+         return da < db;
+      if (nodes[a].height != nodes[b].height)
+         return nodes[a].height > nodes[b].height;
+      return nodes[a].order < nodes[b].order;
+   };
+   auto issue = [&](int k, int at) {
+      SchedNode &nd = nodes[k];
+      nd.done = true;
+      order.push_back(k);
+      press += delta(k, remUses);
+      peak = MAX2(peak, press);
+      commit(k, remUses);
+      Instruction *i = insns[k];
+      for (int s = 0; i->srcExists(s); ++s) {
+         Instruction *d = i->getSrc(s)->getUniqueInsn();
+         auto it = d ? idx.find(d) : idx.end();
+         if (it == idx.end())
+            continue;
+         for (size_t o = 0; o < outstanding.size(); ++o)
+            if (outstanding[o] == it->second) {
+               outstanding.erase(outstanding.begin() + o);
+               break;
+            }
+      }
+      if (needsBar[k])
+         outstanding.push_back(k);
+      if (isSfu(k))
+         sfuFree = at + sfuTp;
+      for (auto &e : nd.succs) {
+         nodes[e.first].earliest = MAX2(nodes[e.first].earliest, at + e.second);
+         nodes[e.first].npreds--;
+      }
+   };
+
+   const std::unordered_map<const Value *, int> remStart = remUses;
+   std::vector<int> npreds(n);
+   for (int k = 0; k < n; ++k)
+      npreds[k] = nodes[k].npreds;
+
+   // Greedy choices can corner themselves: every remaining candidate raises
+   // the pressure. Aim lower and retry, else keep the original order.
+   for (int slack = 0;; slack = slack ? slack * 2 : 1) {
+      soft = limit - slack;
+      for (int k = 0; k < n; ++k) {
+         nodes[k].done = false;
+         nodes[k].earliest = 0;
+         nodes[k].npreds = npreds[k];
+      }
+      remUses = remStart;
+      outstanding.clear();
+      order.clear();
+      press = peak = cycle = sfuFree = 0;
+      while ((int)order.size() < n) {
+         int best = -1, wait = -1, waitAt = 0, fit = -1, fitAt = 0, any = -1;
+         for (int k = 0; k < n; ++k) {
+            if (nodes[k].done || nodes[k].npreds)
+               continue;
+            any = k;
+            const int t = ready(k);
+            if (t < 0)
+               continue;
+            if (t <= cycle) {
+               if (better(k, best))
+                  best = k;
+            } else {
+               if (wait < 0 || t < waitAt || (t == waitAt && better(k, wait))) {
+                  wait = k;
+                  waitAt = t;
+               }
+               const int d = delta(k, remUses);
+               if ((d <= 0 || press + d <= soft) &&
+                   (fit < 0 || t < fitAt || (t == fitAt && better(k, fit)))) {
+                  fit = k;
+                  fitAt = t;
+               }
+            }
+         }
+         if (best < 0 && wait >= 0) {
+            best = wait;
+            cycle = waitAt;
+         }
+         // rather than raise the pressure above the limit, stall for a
+         // candidate that stays within it or does not raise it
+         const int db = best >= 0 ? delta(best, remUses) : 0;
+         if (fit >= 0 && db > 0 && press + db > soft) {
+            best = fit;
+            cycle = fitAt;
+         }
+         if (best < 0) { // every candidate needs a scoreboard: share one
+            best = any;
+            for (int k = 0; k < n; ++k)
+               if (!nodes[k].done && !nodes[k].npreds && better(k, best))
+                  best = k;
+            cycle = MAX2(cycle, nodes[best].earliest);
+         }
+         issue(best, cycle);
+         if (isDualIssueFirst(insns[best])) {
+            int sec = -1;
+            for (int k = 0; k < n; ++k) {
+               if (nodes[k].done || nodes[k].npreds ||
+                   !isDualIssueSecond(insns[k]))
+                  continue;
+               const int t = ready(k);
+               if (t < 0 || t > cycle)
+                  continue;
+               if (better(k, sec))
+                  sec = k;
+            }
+            if (sec >= 0 && (delta(sec, remUses) <= 0 ||
+                             press + delta(sec, remUses) <= soft))
+               issue(sec, cycle);
+         }
+         cycle++;
+      }
+      if (peak <= limit)
+         break;
+      if (soft <= 0)
+         return;
+   }
+
+   for (int k = 0; k < n; ++k)
+      bb->remove(insns[k]);
+   for (int k : order) {
+      if (before)
+         bb->insertBefore(before, insns[k]);
+      else
+         bb->insertTail(insns[k]);
+   }
+}
+
+} // anonymous namespace
+
+bool
+GM107PreRAScheduling::visit(BasicBlock *bb)
+{
+   GM107PreRASched(bb).run();
    return true;
 }
 

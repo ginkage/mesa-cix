@@ -30,4 +30,11 @@ protected:
    void handleQUADPOP(Instruction *);
 };
 
+// Reorders runs of side-effect free instructions for latency and dual issue
+class GM107PreRAScheduling : public Pass
+{
+private:
+   bool visit(BasicBlock *) override;
+};
+
 } // namespace nv50_ir
