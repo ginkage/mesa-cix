@@ -143,6 +143,8 @@ private:
    };
 
    bool insertBarriers(BasicBlock *);
+   void pairForDualIssue(BasicBlock *);
+   bool isReadyAt(const Instruction *, const Instruction *) const;
 
    bool doesInsnWriteTo(const Instruction *insn, const Value *val) const;
    Instruction *findFirstUse(const Instruction *) const;

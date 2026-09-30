@@ -60,3 +60,19 @@ idep_nouveau_codegen = declare_dependency(
   sources : [ 'nv50_ir_driver.h' ],
   include_directories : include_directories('.'),
 )
+
+if with_tests
+  test(
+    'nouveau_codegen',
+    executable(
+      'nouveau_codegen_test',
+      files('tests/sched_gm107_test.cpp'),
+      gnu_symbol_visibility : 'hidden',
+      include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux],
+      link_with : [libnouveau_codegen, libgallium],
+      dependencies : [idep_gtest, dep_libdrm, idep_mesautil, idep_nir],
+    ),
+    suite : ['compiler', 'nouveau'],
+    protocol : 'gtest',
+  )
+endif

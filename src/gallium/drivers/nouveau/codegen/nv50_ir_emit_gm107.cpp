@@ -4013,10 +4013,13 @@ SchedDataCalculatorGM107::setDelay(Instruction *insn, int delay,
       delay = 0xd;
    }
 
-   if (!next || !targ->canDualIssue(insn, next)) {
+   // dual-issue only when the next instruction could go out this very cycle
+   if (!next || delay > 0 || (insn->sched & 0x7e0) != 0x7e0 ||
+       (next->sched & (0x3f << 11)) || !targ->canDualIssue(insn, next)) {
       delay = CLAMP(delay, GM107_MIN_ISSUE_DELAY, GM107_MAX_ISSUE_DELAY);
    } else {
       delay = 0x0; // dual-issue
+      emitYield(insn); // the pair needs the flag on its first instruction
    }
 
    wr = getWrDepBar(insn);
@@ -4316,12 +4319,86 @@ SchedDataCalculatorGM107::visit(Function *func)
 {
    ArrayList insns;
 
+   // Move instructions before any block computes the delay into the entry
+   // of its successors.
+   if (debug_get_bool_option("NV50_PROG_SCHED", true)) {
+      for (IteratorRef it = func->cfg.iteratorCFG(); !it->end(); it->next())
+         pairForDualIssue(BasicBlock::get(reinterpret_cast<Graph::Node *>(it->get())));
+   }
+
    func->orderInstructions(insns);
 
    scoreBoards.resize(func->cfg.getSize());
    for (size_t i = 0; i < scoreBoards.size(); ++i)
       scoreBoards[i].wipe();
    return true;
+}
+
+static bool
+isDualIssueSecond(const Instruction *insn)
+{
+   switch (insn->op) {
+   case OP_LINTERP:
+   case OP_PINTERP:
+   case OP_RCP:
+   case OP_RSQ:
+   case OP_LG2:
+   case OP_EX2:
+   case OP_SIN:
+   case OP_COS:
+      return typeSizeof(insn->dType) <= 4;
+   default:
+      return false;
+   }
+}
+
+// Whether c's inputs will likely be available when issued right before b:
+// no recent fixed-latency producer and no variable-latency one in flight.
+bool
+SchedDataCalculatorGM107::isReadyAt(const Instruction *b, const Instruction *c) const
+{
+   int n = 0;
+   for (const Instruction *p = b->prev; p && n < 16; p = p->prev, ++n) {
+      if ((n < 6 || targ->isBarrierRequired(p)) && !p->canCommuteDefSrc(c))
+         return false;
+   }
+   return true;
+}
+
+// Pull an independent ALU instruction from shortly after each interpolation
+// or MUFU op up in front of it, so that the two can be dual-issued.
+void
+SchedDataCalculatorGM107::pairForDualIssue(BasicBlock *bb)
+{
+   std::vector<int> serials;
+
+   for (Instruction *i = bb->getEntry(); i; i = i->next)
+      serials.push_back(i->serial);
+
+   for (Instruction *b = bb->getEntry(); b; b = b->next) {
+      if (!isDualIssueSecond(b) || (b->prev && targ->canDualIssue(b->prev, b)))
+         continue;
+
+      Instruction *c = b->next;
+      for (int n = 0; c && n < 8; c = c->next, ++n) {
+         if (c->fixed || c->join || c->asFlow() || c->op == OP_EXIT)
+            break;
+         if (!targ->canDualIssue(c, b) || !isReadyAt(b, c))
+            continue;
+         Instruction *x;
+         for (x = b; x != c && c->isCommutationLegal(x); x = x->next);
+         if (x == c) {
+            bb->remove(c);
+            bb->insertBefore(b, c);
+            break;
+         }
+      }
+   }
+
+   // insertBarriers() orders instructions by serial
+   int k = 0;
+   for (Instruction *i = bb->getEntry(); i; i = i->next)
+      i->serial = serials[k++];
 }
 
 bool

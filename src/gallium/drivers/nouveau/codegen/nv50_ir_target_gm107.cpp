@@ -187,8 +187,33 @@ TargetGM107::isBarrierRequired(const Instruction *insn) const
 bool
 TargetGM107::canDualIssue(const Instruction *a, const Instruction *b) const
 {
-   // TODO
-   return false;
+   // A 32-bit ALU op or move can go out together with an independent
+   // interpolation or MUFU op that follows it.
+   const OpClass clA = operationClass[a->op];
+   if (clA != OPCLASS_ARITH && clA != OPCLASS_COMPARE && clA != OPCLASS_MOVE)
+      return false;
+   if (typeSizeof(a->dType) > 4 || a->defExists(1))
+      return false;
+   if (a->defExists(0) && a->getDef(0)->reg.file != FILE_GPR)
+      return false;
+
+   switch (b->op) {
+   case OP_LINTERP:
+   case OP_PINTERP:
+   case OP_RCP:
+   case OP_RSQ:
+   case OP_LG2:
+   case OP_EX2:
+   case OP_SIN:
+   case OP_COS:
+      break;
+   default:
+      return false;
+   }
+   if (typeSizeof(b->dType) > 4)
+      return false;
+
+   return a->canCommuteDefDef(b) && a->canCommuteDefSrc(b);
 }
 
 // Return the number of stall counts needed to complete a single instruction.

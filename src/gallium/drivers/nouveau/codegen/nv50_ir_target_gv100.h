@@ -42,6 +42,11 @@ public:
    virtual bool isSatSupported(const Instruction *) const;
 
    virtual bool isBarrierRequired(const Instruction *) const;
+   // Volta and later issue one instruction per cycle
+   virtual bool canDualIssue(const Instruction *, const Instruction *) const
+   {
+      return false;
+   }
 
 private:
    void initOpInfo();
