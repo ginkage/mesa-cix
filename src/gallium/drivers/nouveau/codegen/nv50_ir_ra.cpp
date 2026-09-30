@@ -27,6 +27,7 @@
 #include <stack>
 #include <limits>
 #include <unordered_map>
+#include <vector>
 
 namespace nv50_ir {
 namespace {
@@ -674,6 +675,8 @@ private:
       Interval livei;
 
       std::list<RIG_Node *> prefRegs;
+      // values read by the same instructions, see selectRegisters()
+      std::vector<RIG_Node *> bankNbrs;
    };
 
 private:
@@ -1395,6 +1398,21 @@ GCRA::selectRegisters()
             }
          }
       }
+      if (node->reg < 0 && node->colors == 1 && !node->bankNbrs.empty()) {
+         // take the lowest free register in a bank none of the values read
+         // alongside this one uses, as long as that needs no more registers
+         unsigned int used = 0;
+         for (const RIG_Node *n : node->bankNbrs)
+            if (n->reg >= 0)
+               used |= 1 << (n->reg % 4);
+         const int32_t lim = MIN2((int32_t)node->maxReg, regs.getMaxAssigned(node->f));
+         for (int32_t r = 0; used && used != 0xf && r <= lim; ++r) {
+            if (!(used & (1 << (r % 4))) && regs.testOccupy(node->f, r, 1)) {
+               node->reg = r;
+               break;
+            }
+         }
+      }
       if (node->reg >= 0)
          continue;
       LValue *lval = node->getValue();
@@ -1499,6 +1517,28 @@ GCRA::allocateRegisters(ArrayList& insns)
 
    buildRIG(insns);
    calculateSpillWeights();
+
+   // Maxwell and Pascal read GPR operands from four banks (id % 4), and two
+   // operands of one instruction in the same bank cost an extra issue cycle.
+   if (prog->getTarget()->getChipset() >= NVISA_GM107_CHIPSET &&
+       prog->getTarget()->getChipset() < NVISA_GV100_CHIPSET) {
+      for (unsigned int i = 0; i < insns.getSize(); ++i) {
+         Instruction *insn = reinterpret_cast<Instruction *>(insns.get(i));
+         RIG_Node *n[3];
+         int k = 0;
+         for (int s = 0; s < 3 && insn->srcExists(s); ++s) {
+            if (insn->src(s).getFile() != FILE_GPR)
+               continue;
+            LValue *v = insn->getSrc(s)->rep()->asLValue();
+            if (v && getNode(v)->colors == 1)
+               n[k++] = getNode(v);
+         }
+         for (int a = 0; a < k; ++a)
+            for (int b = 0; b < k; ++b)
+               if (n[a] != n[b])
+                  n[a]->bankNbrs.push_back(n[b]);
+      }
+   }
    ret = simplify();
    if (!ret)
       goto out;
