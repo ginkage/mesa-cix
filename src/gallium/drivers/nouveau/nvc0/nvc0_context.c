@@ -546,7 +546,7 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    if (screen->class_compute)
       BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, screen->fence.bo);
 
-   nvc0->base.scratch.bo_size = 2 << 20;
+   nvc0->base.scratch.bo_size = 16 << 20;
 
    memset(nvc0->tex_handles, ~0, sizeof(nvc0->tex_handles));
 

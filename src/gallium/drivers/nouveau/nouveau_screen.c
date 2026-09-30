@@ -523,7 +523,7 @@ nouveau_context_init(struct nouveau_context *context, struct nouveau_screen *scr
       return ret;
 
    ret = nouveau_pushbuf_create(screen, context, context->client, chan,
-                                4, 512 * 1024, &context->pushbuf);
+                                8, 1024 * 1024, &context->pushbuf);
    if (ret)
       return ret;
 
