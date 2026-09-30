@@ -350,6 +350,35 @@ GM107LoweringPass::handleSUQ(TexInstruction *suq)
    return true;
 }
 
+// Interpolate without w and multiply by 1/w after, like the blob: the IPA
+// then need not wait for the RCP.
+void
+GM107LoweringPass::handlePINTERP(Instruction *i)
+{
+   if (prog->getTarget()->getChipset() >= NVISA_GV100_CHIPSET ||
+       i->getInterpMode() != NV50_IR_INTERP_PERSPECTIVE ||
+       i->getSampleMode() == NV50_IR_INTERP_OFFSET ||
+       i->src(0).isIndirect(0) || typeSizeof(i->dType) != 4 ||
+       i->srcExists(2))
+      return;
+
+   Value *w = i->getSrc(1), *def = i->getDef(0), *t = bld.getSSA();
+   i->op = OP_LINTERP;
+   i->setInterpolate((i->ipa & ~NV50_IR_INTERP_MODE_MASK) | NV50_IR_INTERP_LINEAR);
+   i->setSrc(1, NULL);
+   i->setDef(0, t);
+   bld.setPosition(i, true);
+   bld.mkOp2(OP_MUL, TYPE_F32, def, t, w);
+   // issue the interpolation before the reciprocal it no longer waits for
+   Instruction *rcp = i->prev;
+   while (rcp && !(rcp->op == OP_RCP && rcp->getDef(0) == w))
+      rcp = rcp->prev;
+   if (rcp) {
+      i->bb->remove(i);
+      rcp->bb->insertBefore(rcp, i);
+   }
+}
+
 //
 // - add quadop dance for texturing
 // - put FP outputs in GPRs
@@ -373,6 +402,9 @@ GM107LoweringPass::visit(Instruction *i)
       return handlePOPCNT(i);
    case OP_SUQ:
       return handleSUQ(i->asTex());
+   case OP_PINTERP:
+      handlePINTERP(i);
+      return NVC0LoweringPass::visit(i);
    default:
       return NVC0LoweringPass::visit(i);
    }

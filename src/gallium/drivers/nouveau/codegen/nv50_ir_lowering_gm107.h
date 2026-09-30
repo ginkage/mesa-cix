@@ -15,6 +15,7 @@ protected:
    bool handlePFETCH(Instruction *);
    bool handlePOPCNT(Instruction *);
    bool handleSUQ(TexInstruction *);
+   void handlePINTERP(Instruction *);
 };
 
 class GM107LegalizeSSA : public NVC0LegalizeSSA
