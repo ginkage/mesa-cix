@@ -1093,6 +1093,9 @@ nvc0_screen_init_context(struct nvc0_context *nvc0)
    if (nvc0_screen_has_tiled_cache(screen)) {
       BEGIN_NVC0(push, SUBC_3D(0x0f60), 1);
       PUSH_DATA (push, 1);
+      /* SET_PS_WARP_WATERMARKS, the blob's LOW 8 HIGH 0x80 */
+      BEGIN_NVC0(push, SUBC_3D(0x1450), 1);
+      PUSH_DATA (push, 0x00800008);
    }
 
    BEGIN_NVC0(push, NVC0_3D(CSAA_ENABLE), 1);
