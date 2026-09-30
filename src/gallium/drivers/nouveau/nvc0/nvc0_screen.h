@@ -135,6 +135,14 @@ nvc0_screen(struct pipe_screen *screen)
    return (struct nvc0_screen *)screen;
 }
 
+/* Maxwell's tiled caching (binned rasterization), undocumented method 0x0f60 */
+static inline bool
+nvc0_screen_has_tiled_cache(const struct nvc0_screen *screen)
+{
+   return screen->base.class_3d >= GM107_3D_CLASS &&
+          screen->base.class_3d < GP100_3D_CLASS;
+}
+
 int nvc0_screen_get_driver_query_info(struct pipe_screen *, unsigned,
                                       struct pipe_driver_query_info *);
 

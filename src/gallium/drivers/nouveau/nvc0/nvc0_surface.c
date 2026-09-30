@@ -285,6 +285,14 @@ nvc0_resource_copy_region(struct pipe_context *pipe,
    nouveau_bufctx_reset(nvc0->bufctx, 0);
 }
 
+/* A clear in a binned batch costs about a microsecond per bin: clear unbinned. */
+static void
+nvc0_clear_set_tiled_cache(struct nvc0_context *nvc0, bool enable)
+{
+   if (nvc0_screen_has_tiled_cache(nvc0->screen))
+      IMMED_NVC0(nvc0->base.pushbuf, SUBC_3D(0x0f60), enable);
+}
+
 static void
 nvc0_clear_render_target(struct pipe_context *pipe,
                          struct pipe_surface *dst,
@@ -301,7 +309,7 @@ nvc0_clear_render_target(struct pipe_context *pipe,
 
    assert(dst->texture->target != PIPE_BUFFER);
 
-   if (!PUSH_SPACE(push, 32 + sf->depth))
+   if (!PUSH_SPACE(push, 34 + sf->depth))
       return;
 
    PUSH_REF1 (push, res->bo, res->domain | NOUVEAU_BO_WR);
@@ -357,11 +365,13 @@ nvc0_clear_render_target(struct pipe_context *pipe,
    if (!render_condition_enabled)
       IMMED_NVC0(push, NVC0_3D(COND_MODE), NVC0_3D_COND_MODE_ALWAYS);
 
+   nvc0_clear_set_tiled_cache(nvc0, false);
    BEGIN_NIC0(push, NVC0_3D(CLEAR_BUFFERS), sf->depth);
    for (z = 0; z < sf->depth; ++z) {
       PUSH_DATA (push, 0x3c |
                  (z << NVC0_3D_CLEAR_BUFFERS_LAYER__SHIFT));
    }
+   nvc0_clear_set_tiled_cache(nvc0, true);
 
    if (!render_condition_enabled)
       IMMED_NVC0(push, NVC0_3D(COND_MODE), nvc0->cond_condmode);
@@ -603,7 +613,9 @@ nvc0_clear_buffer(struct pipe_context *pipe,
 
    IMMED_NVC0(push, NVC0_3D(COND_MODE), NVC0_3D_COND_MODE_ALWAYS);
 
+   nvc0_clear_set_tiled_cache(nvc0, false);
    IMMED_NVC0(push, NVC0_3D(CLEAR_BUFFERS), 0x3c);
+   nvc0_clear_set_tiled_cache(nvc0, true);
 
    IMMED_NVC0(push, NVC0_3D(COND_MODE), nvc0->cond_condmode);
 
@@ -639,7 +651,7 @@ nvc0_clear_depth_stencil(struct pipe_context *pipe,
 
    assert(dst->texture->target != PIPE_BUFFER);
 
-   if (!PUSH_SPACE(push, 32 + sf->depth))
+   if (!PUSH_SPACE(push, 34 + sf->depth))
       return;
 
    PUSH_REF1 (push, mt->base.bo, mt->base.domain | NOUVEAU_BO_WR);
@@ -679,11 +691,13 @@ nvc0_clear_depth_stencil(struct pipe_context *pipe,
    if (!render_condition_enabled)
       IMMED_NVC0(push, NVC0_3D(COND_MODE), NVC0_3D_COND_MODE_ALWAYS);
 
+   nvc0_clear_set_tiled_cache(nvc0, false);
    BEGIN_NIC0(push, NVC0_3D(CLEAR_BUFFERS), sf->depth);
    for (z = 0; z < sf->depth; ++z) {
       PUSH_DATA (push, mode |
                  (z << NVC0_3D_CLEAR_BUFFERS_LAYER__SHIFT));
    }
+   nvc0_clear_set_tiled_cache(nvc0, true);
 
    if (!render_condition_enabled)
       IMMED_NVC0(push, NVC0_3D(COND_MODE), nvc0->cond_condmode);
@@ -746,6 +760,8 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
       mode |= NVC0_3D_CLEAR_BUFFERS_S;
    }
 
+   nvc0_clear_set_tiled_cache(nvc0, false);
+
    if (mode) {
       int zs_layers = 0, color0_layers = 0;
       if (fb->cbufs[0].texture && (mode & 0x3c))
@@ -779,6 +795,8 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
                     (j << NVC0_3D_CLEAR_BUFFERS_LAYER__SHIFT));
       }
    }
+
+   nvc0_clear_set_tiled_cache(nvc0, true);
 
    /* restore screen scissor */
    if (scissor_state) {

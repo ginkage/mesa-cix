@@ -1089,6 +1089,12 @@ nvc0_screen_init_context(struct nvc0_context *nvc0)
    BEGIN_NVC0(push, SUBC_3D(0x0d9c), 1);
    PUSH_DATA (push, 0);
 
+   /* undocumented: enables tiled caching, like the blob */
+   if (nvc0_screen_has_tiled_cache(screen)) {
+      BEGIN_NVC0(push, SUBC_3D(0x0f60), 1);
+      PUSH_DATA (push, 1);
+   }
+
    BEGIN_NVC0(push, NVC0_3D(CSAA_ENABLE), 1);
    PUSH_DATA (push, 0);
    BEGIN_NVC0(push, NVC0_3D(MULTISAMPLE_ENABLE), 1);

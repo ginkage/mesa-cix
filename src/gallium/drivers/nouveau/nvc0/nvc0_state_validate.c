@@ -139,6 +139,27 @@ validate_sample_locations(struct nvc0_context *nvc0)
       nvc0_validate_sample_locations(nvc0, ms);
 }
 
+/* the blob's tiled-caching bin: 128 px wide, 64 KiB of colour + ZS */
+static void
+nvc0_validate_tiled_cache_bin(struct nvc0_context *nvc0)
+{
+   struct pipe_framebuffer_state *fb = &nvc0->framebuffer;
+   unsigned bpp = 0, h;
+
+   for (unsigned i = 0; i < fb->nr_cbufs; ++i) {
+      if (fb->cbufs[i].texture)
+         bpp += util_format_get_blocksize(fb->cbufs[i].format);
+   }
+   if (fb->zsbuf.texture)
+      bpp += util_format_get_blocksize(fb->zsbuf.format);
+   bpp *= util_framebuffer_get_num_samples(fb);
+
+   h = bpp ? CLAMP(1u << util_logbase2(512 / MIN2(bpp, 512)), 0x10, 0x80) : 0x80;
+
+   BEGIN_NVC0(nvc0->base.pushbuf, SUBC_3D(0x0f64), 1);
+   PUSH_DATA (nvc0->base.pushbuf, (0x80 << 16) | h);
+}
+
 static void
 nvc0_validate_fb(struct nvc0_context *nvc0)
 {
@@ -264,6 +285,9 @@ nvc0_validate_fb(struct nvc0_context *nvc0)
    BEGIN_NVC0(push, NVC0_3D(RT_CONTROL), 1);
    PUSH_DATA (push, (076543210 << 4) | nr_cbufs);
    IMMED_NVC0(push, NVC0_3D(MULTISAMPLE_MODE), ms_mode);
+
+   if (nvc0_screen_has_tiled_cache(nvc0->screen))
+      nvc0_validate_tiled_cache_bin(nvc0);
 
    if (serialize)
       IMMED_NVC0(push, NVC0_3D(SERIALIZE), 0);
