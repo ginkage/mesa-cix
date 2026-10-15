@@ -1763,6 +1763,64 @@ static void
 nvc0_flush_resource(struct pipe_context *ctx,
                     struct pipe_resource *resource)
 {
+   struct nvc0_context *nvc0 = nvc0_context(ctx);
+   struct nvc0_screen *screen = nvc0->screen;
+   struct nv50_miptree *mt = nv50_miptree(resource);
+   const unsigned ms = util_logbase2(resource->nr_samples);
+   struct pipe_resource templ = *resource;
+   struct pipe_resource *res;
+   struct nv50_miptree *tmp;
+   bool flush = false;
+   unsigned l, i;
+
+   /* No VRAM: the kernel won't export a compressed buffer, so a resource about
+    * to be shared moves to the storage a shared one is created with. */
+   if (resource->target == PIPE_BUFFER || (resource->bind & PIPE_BIND_SHARED) ||
+       (NV_VRAM_DOMAIN(&screen->base) & NOUVEAU_BO_VRAM))
+      return;
+   if (nouveau_bo_memtype(mt->base.bo) !=
+          nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, true) ||
+       nouveau_bo_memtype(mt->base.bo) ==
+          nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, false))
+      return;
+
+   templ.bind |= PIPE_BIND_SHARED;
+   res = nvc0_miptree_create(ctx->screen, &templ, NULL, 0);
+   if (!res)
+      return;
+   tmp = nv50_miptree(res);
+
+   for (l = 0; l <= templ.last_level; ++l) {
+      struct pipe_box box;
+
+      u_box_3d(0, 0, 0, u_minify(templ.width0, l), u_minify(templ.height0, l),
+               util_num_layers(&templ, l), &box);
+      nvc0_resource_copy_region(ctx, res, l, 0, 0, 0, resource, l, &box);
+   }
+
+   /* same layout, only the kind differs */
+   SWAP(mt->base.bo, tmp->base.bo);
+   SWAP(mt->base.address, tmp->base.address);
+   resource->bind = templ.bind;
+   mt->base.status |= NOUVEAU_BUFFER_STATUS_GPU_WRITING;
+   nouveau_fence_ref(nvc0->base.fence, &mt->base.fence, &screen->base);
+   nouveau_fence_ref(nvc0->base.fence, &mt->base.fence_wr, &screen->base);
+   nouveau_fence_ref(nvc0->base.fence, &tmp->base.fence, &screen->base);
+   pipe_resource_reference(&res, NULL);
+
+   /* Every context rebinds its views and surfaces; bindless handles never
+    * revalidate, so TIC slots and Kepler image handles get the new address. */
+   simple_mtx_lock(&screen->state_lock);
+   nvc0_switch_pipe_context(nvc0);
+   for (i = 0; i < NVC0_TIC_MAX_ENTRIES; ++i) {
+      struct nv50_tic_entry *tic = screen->tic.entries[i];
+      if (tic && tic->pipe.texture == resource)
+         flush |= nvc0_update_tic(nvc0, tic, &mt->base);
+   }
+   if (flush)
+      IMMED_NVC0(nvc0->base.pushbuf, NVC0_3D(TIC_FLUSH), 0);
+   nve4_update_image_handles(nvc0, resource);
+   simple_mtx_unlock(&screen->state_lock);
 }
 
 bool

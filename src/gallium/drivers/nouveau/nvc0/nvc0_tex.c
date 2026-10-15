@@ -453,9 +453,10 @@ nvc0_update_tic(struct nvc0_context *nvc0, struct nv50_tic_entry *tic,
                 struct nv04_resource *res)
 {
    uint64_t address = res->address;
-   if (res->base.target != PIPE_BUFFER)
-      return false;
-   address += tic->pipe.u.buf.offset;
+   if (res->base.target == PIPE_BUFFER)
+      address += tic->pipe.u.buf.offset;
+   else if (res->base.array_size > 1 && nouveau_bo_memtype(res->bo))
+      address += tic->pipe.u.tex.first_layer * nv50_miptree(&res->base)->layer_stride;
    if (tic->tic[1] == (uint32_t)address &&
        (tic->tic[2] & 0xff) == address >> 32)
       return false;
@@ -1358,14 +1359,44 @@ nvc0_validate_surfaces(struct nvc0_context *nvc0)
    }
 }
 
+static void
+nve4_upload_image_handle(struct nvc0_context *nvc0, int i)
+{
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
+   struct nvc0_screen *screen = nvc0->screen;
+   int s;
+
+   for (s = 0; s < 6; s++) {
+      BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
+      PUSH_DATA (push, NVC0_CB_AUX_SIZE);
+      PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+      PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+      BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 16);
+      PUSH_DATA (push, NVC0_CB_AUX_BINDLESS_INFO(i));
+      nve4_set_surface_info(push, screen->img.entries[i], nvc0);
+   }
+}
+
+/* Kepler image handles bake the resource's address into their surface info */
+void
+nve4_update_image_handles(struct nvc0_context *nvc0, struct pipe_resource *res)
+{
+   struct nvc0_screen *screen = nvc0->screen;
+   int i;
+
+   for (i = 0; i < NVE4_IMG_MAX_HANDLES; ++i) {
+      if (screen->img.entries[i] && screen->img.entries[i]->resource == res)
+         nve4_upload_image_handle(nvc0, i);
+   }
+}
+
 static uint64_t
 nve4_create_image_handle(struct pipe_context *pipe,
                          const struct pipe_image_view *view)
 {
    struct nvc0_context *nvc0 = nvc0_context(pipe);
-   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_screen *screen = nvc0->screen;
-   int i = screen->img.next, s;
+   int i = screen->img.next;
 
    while (screen->img.entries[i]) {
       i = (i + 1) & (NVE4_IMG_MAX_HANDLES - 1);
@@ -1376,16 +1407,7 @@ nve4_create_image_handle(struct pipe_context *pipe,
    screen->img.next = (i + 1) & (NVE4_IMG_MAX_HANDLES - 1);
    screen->img.entries[i] = calloc(1, sizeof(struct pipe_image_view));
    *screen->img.entries[i] = *view;
-
-   for (s = 0; s < 6; s++) {
-      BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-      PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-      PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
-      PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
-      BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 16);
-      PUSH_DATA (push, NVC0_CB_AUX_BINDLESS_INFO(i));
-      nve4_set_surface_info(push, view, nvc0);
-   }
+   nve4_upload_image_handle(nvc0, i);
 
    return 0x100000000ULL | i;
 }

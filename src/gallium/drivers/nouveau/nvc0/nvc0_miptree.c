@@ -482,6 +482,11 @@ nvc0_miptree_create(struct pipe_screen *pscreen,
    if (pt->bind & PIPE_BIND_LINEAR)
       pt->flags |= NOUVEAU_RESOURCE_FLAG_LINEAR;
 
+   /* No VRAM: nothing decompresses a shared buffer, the kernel won't export it */
+   if ((pt->bind & PIPE_BIND_SHARED) &&
+       !(NV_VRAM_DOMAIN(nouveau_screen(pscreen)) & NOUVEAU_BO_VRAM))
+      compressed = false;
+
    if (count > 0) {
       modifier = nvc0_miptree_select_best_modifier(pscreen, mt,
                                                    modifiers, count);

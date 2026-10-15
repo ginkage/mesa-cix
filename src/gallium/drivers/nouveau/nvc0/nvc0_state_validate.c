@@ -799,7 +799,7 @@ nvc0_validate_fbread(struct nvc0_context *nvc0)
    }
 }
 
-static void
+void
 nvc0_switch_pipe_context(struct nvc0_context *ctx_to)
 {
    struct nvc0_context *ctx_from = ctx_to->screen->cur_ctx;

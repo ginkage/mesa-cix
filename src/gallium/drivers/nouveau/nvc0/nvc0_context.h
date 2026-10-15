@@ -378,6 +378,7 @@ struct nvc0_state_validate {
 bool nvc0_state_validate(struct nvc0_context *, uint32_t,
                          struct nvc0_state_validate *, int, uint32_t *,
                          struct nouveau_bufctx *);
+void nvc0_switch_pipe_context(struct nvc0_context *);
 bool nvc0_state_validate_3d(struct nvc0_context *, uint32_t);
 
 /* nvc0_surface.c */
@@ -398,6 +399,7 @@ void nvc0_validate_samplers(struct nvc0_context *);
 void nvc0_upload_tsc0(struct nvc0_context *);
 void nve4_set_tex_handles(struct nvc0_context *);
 void nvc0_validate_surfaces(struct nvc0_context *);
+void nve4_update_image_handles(struct nvc0_context *, struct pipe_resource *);
 void nve4_set_surface_info(struct nouveau_pushbuf *,
                            const struct pipe_image_view *,
                            struct nvc0_context *);
