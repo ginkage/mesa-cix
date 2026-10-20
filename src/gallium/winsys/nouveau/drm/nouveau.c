@@ -242,7 +242,7 @@ nouveau_object_subchan_del(struct nouveau_object *obj)
       },
    };
 
-   drmCommandWrite(obj->parent->handle, DRM_NOUVEAU_NVIF, &args, sizeof(args));
+   drmCommandWrite(nouveau_drm(obj)->fd, DRM_NOUVEAU_NVIF, &args, sizeof(args));
 }
 
 static void
