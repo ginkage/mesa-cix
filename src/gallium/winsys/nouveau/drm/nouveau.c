@@ -323,6 +323,9 @@ struct nouveau_device_priv {
    struct list_head bo_list;
    int gart_limit_percent;
    int vram_limit_percent;
+
+   /* written by every ordered submit, so that the kernel orders them */
+   struct nouveau_bo *order_bo;
 };
 
 static inline struct nouveau_device_priv *
@@ -499,6 +502,7 @@ nouveau_device_del(struct nouveau_device **pdev)
    if (!nvdev)
       return;
 
+   nouveau_bo_ref(NULL, &nvdev->order_bo);
    simple_mtx_destroy(&nvdev->lock);
    free(nvdev);
    *pdev = NULL;
@@ -1079,6 +1083,7 @@ struct nouveau_pushbuf_priv {
    uint32_t *bgn;
    int bo_next;
    int bo_nr;
+   bool ordered;
    struct nouveau_bo *bos[];
 };
 
@@ -1186,6 +1191,22 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
       if (dbg_on(0))
          pushbuf_dump(dev, krec, krec_id++, channel);
 
+      /* written by every ordered submit, see nouveau_pushbuf_order() */
+      if (nvpb->ordered) {
+         struct nouveau_bo *obo = nouveau_device(dev)->order_bo;
+
+         krec->buffer[req.nr_buffers++] = (struct drm_nouveau_gem_pushbuf_bo) {
+            .user_priv = (uintptr_t)obo,
+            .handle = obo->handle,
+            .valid_domains = NOUVEAU_GEM_DOMAIN_GART,
+            .write_domains = NOUVEAU_GEM_DOMAIN_GART,
+            .presumed = {
+               .valid = 1,
+               .domain = NOUVEAU_GEM_DOMAIN_GART,
+               .offset = obo->offset,
+            },
+         };
+      }
       ret = drmCommandWriteRead(drm->fd, DRM_NOUVEAU_GEM_PUSHBUF, &req, sizeof(req));
       nvpb->suffix0 = req.suffix0;
       nvpb->suffix1 = req.suffix1;
@@ -1374,7 +1395,8 @@ pushbuf_kref(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint32_t flags
       kref->write_domains |= domains_wr;
       kref->read_domains  |= domains_rd;
    } else {
-      if (krec->nr_buffer == NOUVEAU_GEM_MAX_BUFFERS ||
+      /* one is left for nouveau_pushbuf_order()'s bo */
+      if (krec->nr_buffer == NOUVEAU_GEM_MAX_BUFFERS - 1 ||
           !pushbuf_kref_fits(push, bo, &domains))
          return NULL;
 
@@ -1688,6 +1710,24 @@ nouveau_pushbuf_data(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint64
       kpsh->offset   = offset;
       kpsh->length   = length;
    }
+}
+
+/* Submits of all ordered pushbufs on the device run in the order they were
+ * made, as if they shared one channel. */
+int
+nouveau_pushbuf_order(struct nouveau_pushbuf *push)
+{
+   struct nouveau_device_priv *nvdev = nouveau_device(push->client->device);
+   int ret = 0;
+
+   /* the kernel orders the writers of a bo across channels */
+   simple_mtx_lock(&nvdev->lock);
+   if (!nvdev->order_bo)
+      ret = nouveau_bo_new(&nvdev->base, NOUVEAU_BO_GART, 0, 4096, NULL, &nvdev->order_bo);
+   simple_mtx_unlock(&nvdev->lock);
+   if (!ret)
+      nouveau_pushbuf(push)->ordered = true;
+   return ret;
 }
 
 int
