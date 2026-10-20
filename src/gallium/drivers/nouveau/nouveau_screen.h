@@ -150,6 +150,7 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
                               unsigned *out_stride);
 
 
+int nouveau_channel_new(struct nouveau_device *, struct nouveau_object **);
 int nouveau_screen_init(struct nouveau_screen *, struct nouveau_device *);
 void nouveau_screen_fini(struct nouveau_screen *);
 

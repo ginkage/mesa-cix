@@ -2504,7 +2504,7 @@ nvc0_hw_sm_upload_input(struct nvc0_context *nvc0, struct nvc0_hw_query *hq)
    uint64_t address;
    const int s = 5;
 
-   address = screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
 
    PUSH_SPACE(push, 11);
 
@@ -2545,8 +2545,8 @@ nvc0_hw_sm_end_query(struct nvc0_context *nvc0, struct nvc0_hw_query *hq)
    const uint grid[3] = { screen->mp_count, screen->gpc_count, 1 };
    unsigned c, i;
 
-   if (unlikely(!screen->pm.prog))
-      screen->pm.prog = nvc0_hw_sm_get_program(screen);
+   if (unlikely(!nvc0->pm_prog))
+      nvc0->pm_prog = nvc0_hw_sm_get_program(screen);
 
    /* disable all counting */
    PUSH_SPACE(push, 8);
@@ -2579,7 +2579,7 @@ nvc0_hw_sm_end_query(struct nvc0_context *nvc0, struct nvc0_hw_query *hq)
    /* upload input data for the compute shader which reads MP counters */
    nvc0_hw_sm_upload_input(nvc0, hq);
 
-   pipe->bind_compute_state(pipe, screen->pm.prog);
+   pipe->bind_compute_state(pipe, nvc0->pm_prog);
    for (i = 0; i < 3; i++) {
       info.block[i] = block[i];
       info.grid[i] = grid[i];
@@ -2795,7 +2795,7 @@ nvc0_hw_sm_get_driver_query_info(struct nvc0_screen *screen, unsigned id,
    int count = 0;
 
    if (screen->base.drm->version >= 0x01000101) {
-      if (screen->compute)
+      if (screen->class_compute)
          count = nvc0_hw_sm_get_num_queries(screen);
    }
 
@@ -2803,7 +2803,7 @@ nvc0_hw_sm_get_driver_query_info(struct nvc0_screen *screen, unsigned id,
       return count;
 
    if (id < count) {
-      if (screen->compute) {
+      if (screen->class_compute) {
          if (screen->base.class_3d <= GM200_3D_CLASS) {
             const struct nvc0_hw_sm_query_cfg **queries =
                nvc0_hw_sm_get_queries(screen);

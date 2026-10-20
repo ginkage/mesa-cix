@@ -18,6 +18,7 @@ struct nouveau_fence_work {
    struct list_head list;
    void (*func)(void *);
    void *data;
+   bool caller_owned; /* not freed once func ran */
 };
 
 struct nouveau_fence {
@@ -60,6 +61,9 @@ void _nouveau_fence_update(struct nouveau_screen *, bool flushed);
 /** returns false on error */
 MUST_CHECK bool _nouveau_fence_next(struct nouveau_context *);
 void _nouveau_fence_ref(struct nouveau_fence *, struct nouveau_fence **);
+bool _nouveau_fence_signalled(struct nouveau_fence *);
+/** runs func once the fence signals, never submits anything */
+void _nouveau_fence_add_work(struct nouveau_fence *, struct nouveau_fence_work *);
 
 /** returns false on error */
 MUST_CHECK bool nouveau_fence_new(struct nouveau_context *, struct nouveau_fence **);
@@ -74,6 +78,7 @@ void nouveau_fence_ref(struct nouveau_fence *, struct nouveau_fence **,
                        struct nouveau_screen *);
 
 void nouveau_fence_unref_bo(void *data); /* generic unref bo callback */
+bool nouveau_fence_unref_bo_after(struct nouveau_fence *, struct nouveau_bo *);
 
 static inline struct nouveau_fence *
 nouveau_fence(struct pipe_fence_handle *fence)

@@ -70,7 +70,8 @@ void
 nouveau_context_init_vdec(struct nouveau_context *);
 
 int MUST_CHECK
-nouveau_context_init(struct nouveau_context *, struct nouveau_screen *);
+nouveau_context_init(struct nouveau_context *, struct nouveau_screen *,
+                     struct nouveau_object *chan);
 
 void
 nouveau_scratch_runout_release(struct nouveau_context *);

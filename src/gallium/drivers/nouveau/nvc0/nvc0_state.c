@@ -457,7 +457,7 @@ nvc0_sampler_state_delete(struct pipe_context *pipe, void *hwcso)
          if (nvc0_context(pipe)->samplers[s][i] == hwcso)
             nvc0_context(pipe)->samplers[s][i] = NULL;
 
-   nvc0_screen_tsc_free(nvc0_context(pipe)->screen, nv50_tsc_entry(hwcso));
+   nvc0_screen_tsc_free(nvc0_context(pipe), nv50_tsc_entry(hwcso));
 
    FREE(hwcso);
 }
@@ -483,7 +483,7 @@ nvc0_stage_sampler_states_bind(struct nvc0_context *nvc0,
 
       nvc0->samplers[s][i] = hwcso;
       if (old)
-         nvc0_screen_tsc_unlock(nvc0->screen, old);
+         nvc0_screen_tsc_unlock(nvc0, old);
    }
    if (nr >= nvc0->num_samplers[s])
       nvc0->num_samplers[s] = highest_found + 1;
@@ -513,7 +513,7 @@ nvc0_sampler_view_destroy(struct pipe_context *pipe,
 {
    pipe_resource_reference(&view->texture, NULL);
 
-   nvc0_screen_tic_free(nvc0_context(pipe)->screen, nv50_tic_entry(view));
+   nvc0_screen_tic_free(nvc0_context(pipe), nv50_tic_entry(view));
 
    FREE(nv50_tic_entry(view));
 }
@@ -550,7 +550,7 @@ nvc0_stage_set_sampler_views(struct nvc0_context *nvc0, int s,
             nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_TEX(i));
          else
             nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
-         nvc0_screen_tic_unlock(nvc0->screen, old);
+         nvc0_screen_tic_unlock(nvc0, old);
       }
 
       pipe_sampler_view_reference(&nvc0->textures[s][i], view);
@@ -563,7 +563,7 @@ nvc0_stage_set_sampler_views(struct nvc0_context *nvc0, int s,
             nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_TEX(i));
          else
             nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
-         nvc0_screen_tic_unlock(nvc0->screen, old);
+         nvc0_screen_tic_unlock(nvc0, old);
          pipe_sampler_view_reference(&nvc0->textures[s][i], NULL);
       }
    }
@@ -630,12 +630,9 @@ nvc0_sp_state_create(struct pipe_context *pipe,
 static void
 nvc0_sp_state_delete(struct pipe_context *pipe, void *hwcso)
 {
-   struct nvc0_context *nvc0 = nvc0_context(pipe);
    struct nvc0_program *prog = (struct nvc0_program *)hwcso;
 
-   simple_mtx_lock(&nvc0->screen->state_lock);
    nvc0_program_destroy(nvc0_context(pipe), prog);
-   simple_mtx_unlock(&nvc0->screen->state_lock);
 
    ralloc_free(prog->nir);
    FREE(prog);
@@ -772,7 +769,7 @@ nvc0_get_compute_state_info(struct pipe_context *pipe, void *hwcso,
 {
    struct nvc0_context *nvc0 = nvc0_context(pipe);
    struct nvc0_program *prog = (struct nvc0_program *)hwcso;
-   uint16_t obj_class = nvc0->screen->compute->oclass;
+   uint16_t obj_class = nvc0->screen->class_compute;
    uint32_t chipset = nvc0->screen->base.device->chipset;
    uint32_t smregs;
 
@@ -1227,7 +1224,7 @@ nvc0_bind_images_range(struct nvc0_context *nvc0, const unsigned s,
             if (nvc0->images_tic[s][i]) {
                struct nv50_tic_entry *old =
                   nv50_tic_entry(nvc0->images_tic[s][i]);
-               nvc0_screen_tic_unlock(nvc0->screen, old);
+               nvc0_screen_tic_unlock(nvc0, old);
                pipe_sampler_view_reference(&nvc0->images_tic[s][i], NULL);
             }
 
@@ -1247,7 +1244,7 @@ nvc0_bind_images_range(struct nvc0_context *nvc0, const unsigned s,
          if (nvc0->screen->base.class_3d >= GM107_3D_CLASS) {
             struct nv50_tic_entry *old = nv50_tic_entry(nvc0->images_tic[s][i]);
             if (old) {
-               nvc0_screen_tic_unlock(nvc0->screen, old);
+               nvc0_screen_tic_unlock(nvc0, old);
                pipe_sampler_view_reference(&nvc0->images_tic[s][i], NULL);
             }
          }

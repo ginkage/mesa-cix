@@ -116,7 +116,7 @@ nvc0_vertex_state_create(struct pipe_context *pipe,
         }
 
         so->strides[vbi] = ve->src_stride;
-        if (!ve->src_stride && nvc0->screen->eng3d->oclass < GM107_3D_CLASS)
+        if (!ve->src_stride && nvc0->screen->base.class_3d < GM107_3D_CLASS)
            so->constant_vbos |= 1 << vbi;
 
         if (1) {
@@ -367,7 +367,7 @@ nvc0_validate_vertex_buffers(struct nvc0_context *nvc0)
          PUSH_DATA (push, res->address + offset);
       }
 
-      if (nvc0->screen->eng3d->oclass < TU102_3D_CLASS)
+      if (nvc0->screen->base.class_3d < TU102_3D_CLASS)
          BEGIN_NVC0(push, NVC0_3D(VERTEX_ARRAY_LIMIT_HIGH(i)), 2);
       else
          BEGIN_NVC0(push, SUBC_3D(TU102_3D_VERTEX_ARRAY_LIMIT_HIGH(i)), 2);
@@ -417,7 +417,7 @@ nvc0_validate_vertex_buffers_shared(struct nvc0_context *nvc0)
       PUSH_DATAh(push, buf->address + offset);
       PUSH_DATA (push, buf->address + offset);
 
-      if (nvc0->screen->eng3d->oclass < TU102_3D_CLASS)
+      if (nvc0->screen->base.class_3d < TU102_3D_CLASS)
          BEGIN_NVC0(push, NVC0_3D(VERTEX_ARRAY_LIMIT_HIGH(b)), 2);
       else
          BEGIN_NVC0(push, SUBC_3D(TU102_3D_VERTEX_ARRAY_LIMIT_HIGH(b)), 2);
@@ -467,7 +467,6 @@ nvc0_vertex_arrays_validate(struct nvc0_context *nvc0)
    if (update_vertex) {
       const unsigned n = MAX2(vertex->num_elements, nvc0->state.num_vtxelts);
 
-      simple_mtx_assert_locked(&nvc0->screen->state_lock);
       nvc0->state.constant_vbos = const_vbos;
       nvc0->state.constant_elts = 0;
       nvc0->state.num_vtxelts = vertex->num_elements;
@@ -786,7 +785,7 @@ nvc0_draw_stream_output(struct nvc0_context *nvc0,
       PUSH_SPACE(push, 2);
       IMMED_NVC0(push, NVC0_3D(SERIALIZE), 0);
       nvc0_hw_query_fifo_wait(nvc0, nvc0_query(so->pq));
-      if (nvc0->screen->eng3d->oclass < GM107_3D_CLASS)
+      if (nvc0->screen->base.class_3d < GM107_3D_CLASS)
          IMMED_NVC0(push, NVC0_3D(VERTEX_ARRAY_FLUSH), 0);
 
       NOUVEAU_DRV_STAT(&nvc0->screen->base, gpu_serialize_count, 1);
@@ -818,7 +817,10 @@ nvc0_draw_indirect(struct nvc0_context *nvc0, const struct pipe_draw_info *info,
    struct nv04_resource *buf_count = nv04_resource(indirect->indirect_draw_count);
    unsigned size, macro, count = indirect->draw_count, drawid = drawid_offset;
    uint32_t offset = buf->offset + indirect->offset;
-   struct nvc0_screen *screen = nvc0->screen;
+
+   nvc0_resource_validate(nvc0, buf, NOUVEAU_BO_RD);
+   if (buf_count)
+      nvc0_resource_validate(nvc0, buf_count, NOUVEAU_BO_RD);
 
    PUSH_SPACE(push, 7);
 
@@ -832,8 +834,8 @@ nvc0_draw_indirect(struct nvc0_context *nvc0, const struct pipe_draw_info *info,
    /* Queue things up to let the macros write params to the driver constbuf */
    BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
-   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
+   PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
+   PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
    BEGIN_NVC0(push, NVC0_3D(CB_POS), 1);
    PUSH_DATA (push, NVC0_CB_AUX_DRAW_INFO);
 
@@ -936,18 +938,16 @@ nvc0_draw_single_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
 {
    struct nvc0_context *nvc0 = nvc0_context(pipe);
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nvc0_screen *screen = nvc0->screen;
    uint32_t tex_cache_seq;
    int s;
 
-   simple_mtx_assert_locked(&nvc0->screen->state_lock);
 
    if (nvc0->vertprog->vp.need_draw_parameters && (!indirect || indirect->count_from_stream_output)) {
       PUSH_SPACE(push, 9);
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
       PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-      PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
-      PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
+      PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
+      PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
       BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 3);
       PUSH_DATA (push, NVC0_CB_AUX_DRAW_INFO);
       PUSH_DATA (push, info->index_size ? draws->index_bias : 0);
@@ -1027,7 +1027,7 @@ nvc0_draw_single_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
    nvc0_update_prim_restart(nvc0, info->primitive_restart, info->restart_index);
 
    if (nvc0->base.vbo_dirty) {
-      if (nvc0->screen->eng3d->oclass < GM107_3D_CLASS)
+      if (nvc0->screen->base.class_3d < GM107_3D_CLASS)
          IMMED_NVC0(push, NVC0_3D(VERTEX_ARRAY_FLUSH), 0);
       nvc0->base.vbo_dirty = false;
    }
@@ -1079,7 +1079,6 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
    unsigned drawid = drawid_offset;
 
    /* dont wanna start trippin */
-   simple_mtx_lock(&nvc0->screen->state_lock);
 
    /* NOTE: caller must ensure that (min_index + index_bias) is >= 0 */
    if (info->index_bounds_valid) {
@@ -1134,7 +1133,7 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
       assert(nouveau_resource_mapped_by_gpu(&buf->base));
 
       PUSH_SPACE(push, 6);
-      if (nvc0->screen->eng3d->oclass < TU102_3D_CLASS) {
+      if (nvc0->screen->base.class_3d < TU102_3D_CLASS) {
          BEGIN_NVC0(push, NVC0_3D(INDEX_ARRAY_START_HIGH), 5);
          PUSH_DATAh(push, buf->address);
          PUSH_DATA (push, buf->address);
@@ -1166,7 +1165,7 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
    }
 
    BCTX_REFN_bo(nvc0->bufctx_3d, 3D_TEXT, vram_domain | NOUVEAU_BO_RD,
-                screen->text);
+                nvc0->text);
 
    nvc0_state_validate_3d(nvc0, ~0);
 
@@ -1178,7 +1177,6 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
    }
 
    PUSH_KICK(push);
-   simple_mtx_unlock(&nvc0->screen->state_lock);
 
    nvc0->base.kick_notify = nvc0_default_kick_notify;
 

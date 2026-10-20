@@ -1,6 +1,8 @@
 #ifndef __NVC0_SCREEN_H__
 #define __NVC0_SCREEN_H__
 
+#include "util/u_dynarray.h"
+
 #include "nouveau_screen.h"
 #include "nouveau_mm.h"
 #include "nouveau_fence.h"
@@ -14,6 +16,11 @@
 #define NVC0_TIC_MAX_ENTRIES 2048
 #define NVC0_TSC_MAX_ENTRIES 2048
 #define NVE4_IMG_MAX_HANDLES 512
+
+/* bindless handle i owns TIC and TSC slot NVC0_BINDLESS_SLOT(i) of every context,
+ * a Kepler image handle (i < NVE4_IMG_MAX_HANDLES) bindless info block i */
+#define NVC0_BINDLESS_MAX 1024
+#define NVC0_BINDLESS_SLOT(i) (NVC0_TIC_MAX_ENTRIES - NVC0_BINDLESS_MAX + (i))
 
 /* doesn't count driver-reserved slot */
 #define NVC0_MAX_PIPE_CONSTBUFS 15
@@ -66,47 +73,28 @@ struct nvc0_cb_binding {
    int size;
 };
 
+/* what every context's channel shares, see nvc0_screen_init_context() */
 struct nvc0_screen {
    struct nouveau_screen base;
 
-   struct nvc0_context *cur_ctx;
-   struct nvc0_graph_state save_state;
-   simple_mtx_t state_lock;
+   /* see nvc0_flush_resource() */
+   simple_mtx_t storage_lock;
+   unsigned storage_seq;
 
-   int num_occlusion_queries_active;
+   /* channels of destroyed contexts, see nvc0_screen_put_channel() */
+   simple_mtx_t chan_lock;
+   struct util_dynarray chan_pool;
 
-   struct nouveau_bo *text;
-   struct nouveau_bo *uniform_bo;
    struct nouveau_bo *tls;
-   struct nouveau_bo *txc; /* TIC (offset 0) and TSC (65536) */
    struct nouveau_bo *poly_cache;
 
    uint8_t gpc_count;
    uint16_t mp_count;
    uint16_t mp_count_compute; /* magic reg can make compute use fewer MPs */
 
-   struct nouveau_heap *text_heap;
-   struct nouveau_heap *lib_code; /* allocated from text_heap */
-
-   struct nvc0_blitter *blitter;
-
    struct {
-      void **entries;
-      int next;
-      uint32_t lock[NVC0_TIC_MAX_ENTRIES / 32];
       bool maxwell;
    } tic;
-
-   struct {
-      void **entries;
-      int next;
-      uint32_t lock[NVC0_TSC_MAX_ENTRIES / 32];
-   } tsc;
-
-   struct {
-      struct pipe_image_view **entries;
-      int next;
-   } img;
 
    struct {
       struct nouveau_bo *bo;
@@ -114,21 +102,30 @@ struct nvc0_screen {
    } fence;
 
    struct {
-      struct nvc0_program *prog; /* compute state object to read MP counters */
       struct nvc0_hw_sm_query *mp_counter[8]; /* counter to query allocation */
       uint8_t num_hw_sm_active[2];
       bool mp_counters_enabled;
    } pm;
 
-   /* only maintained on Maxwell+ */
-   struct nvc0_cb_binding cb_bindings[5][NVC0_MAX_CONST_BUFFERS];
+   uint32_t class_m2mf;
+   uint32_t class_copy; /* 0 without a copy engine */
+   uint32_t class_compute;
 
-   struct nouveau_object *eng3d; /* sqrt(1/2)|kepler> + sqrt(1/2)|fermi> */
-   struct nouveau_object *eng2d;
-   struct nouveau_object *m2mf;
-   struct nouveau_object *copy;
-   struct nouveau_object *compute;
-   struct nouveau_object *nvsw;
+   struct {
+      simple_mtx_t lock;
+      struct nvc0_bindless *entries[NVC0_BINDLESS_MAX];
+   } bindless;
+};
+
+/* a bindless handle, uploaded by each context that makes it resident */
+struct nvc0_bindless {
+   unsigned refcnt; /* the handle and each residency, under bindless.lock */
+   struct pipe_resource *res;
+   bool image; /* else a texture with a sampler */
+   uint32_t tic[8];
+   uint32_t tsc[8];
+   int64_t tic_delta; /* TIC address - res address */
+   struct pipe_image_view view; /* Kepler image handle */
 };
 
 static inline struct nvc0_screen *
@@ -143,21 +140,28 @@ int nvc0_screen_get_driver_query_info(struct pipe_screen *, unsigned,
 int nvc0_screen_get_driver_query_group_info(struct pipe_screen *, unsigned,
                                             struct pipe_driver_query_group_info *);
 
-bool nvc0_blitter_create(struct nvc0_screen *);
-void nvc0_blitter_destroy(struct nvc0_screen *);
+bool nvc0_blitter_create(struct nvc0_context *);
+void nvc0_blitter_destroy(struct nvc0_context *);
 
 void nvc0_screen_make_buffers_resident(struct nvc0_screen *);
 
-int nvc0_screen_tic_alloc(struct nvc0_screen *, void *);
-int nvc0_screen_tsc_alloc(struct nvc0_screen *, void *);
+int nvc0_screen_tic_alloc(struct nvc0_context *, void *);
+int nvc0_screen_bindless_new(struct nvc0_screen *, struct nvc0_bindless *, bool kepler_image);
+struct nvc0_bindless *nvc0_screen_bindless_get(struct nvc0_screen *, unsigned i);
+void nvc0_screen_bindless_put(struct nvc0_screen *, unsigned i);
+int nvc0_screen_tsc_alloc(struct nvc0_context *, void *);
 
-int nve4_screen_compute_setup(struct nvc0_screen *, struct nouveau_pushbuf *);
-int nvc0_screen_compute_setup(struct nvc0_screen *, struct nouveau_pushbuf *);
+int nve4_screen_compute_setup(struct nvc0_context *);
+int nvc0_screen_compute_setup(struct nvc0_context *);
 
-int nvc0_screen_resize_text_area(struct nvc0_screen *, struct nouveau_pushbuf *, uint64_t);
+int nvc0_screen_init_context(struct nvc0_context *);
+void nvc0_screen_fini_context(struct nvc0_context *);
+int nvc0_screen_get_channel(struct nvc0_screen *, struct nouveau_object **);
+void nvc0_screen_put_channel(struct nvc0_screen *, struct nouveau_object **);
+int nvc0_screen_resize_text_area(struct nvc0_context *, uint64_t);
 
 // 3D Only
-void nvc0_screen_bind_cb_3d(struct nvc0_screen *, struct nouveau_pushbuf *, bool *, int, int, int, uint64_t);
+void nvc0_screen_bind_cb_3d(struct nvc0_context *, bool *, int, int, int, uint64_t);
 
 struct nvc0_format {
    uint32_t rt;
@@ -182,39 +186,5 @@ struct nvc0_vertex_format {
 
 extern const struct nvc0_format nvc0_format_table[];
 extern const struct nvc0_vertex_format nvc0_vertex_format[];
-
-static inline void
-nvc0_screen_tic_unlock(struct nvc0_screen *screen, struct nv50_tic_entry *tic)
-{
-   if (tic->bindless)
-      return;
-   if (tic->id >= 0)
-      screen->tic.lock[tic->id / 32] &= ~(1 << (tic->id % 32));
-}
-
-static inline void
-nvc0_screen_tsc_unlock(struct nvc0_screen *screen, struct nv50_tsc_entry *tsc)
-{
-   if (tsc->id >= 0)
-      screen->tsc.lock[tsc->id / 32] &= ~(1 << (tsc->id % 32));
-}
-
-static inline void
-nvc0_screen_tic_free(struct nvc0_screen *screen, struct nv50_tic_entry *tic)
-{
-   if (tic->id >= 0) {
-      screen->tic.entries[tic->id] = NULL;
-      screen->tic.lock[tic->id / 32] &= ~(1 << (tic->id % 32));
-   }
-}
-
-static inline void
-nvc0_screen_tsc_free(struct nvc0_screen *screen, struct nv50_tsc_entry *tsc)
-{
-   if (tsc->id >= 0) {
-      screen->tsc.entries[tsc->id] = NULL;
-      screen->tsc.lock[tsc->id / 32] &= ~(1 << (tsc->id % 32));
-   }
-}
 
 #endif

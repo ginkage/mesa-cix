@@ -316,7 +316,7 @@ nv50_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    if (!nv50_blitctx_create(nv50))
       goto out_err;
 
-   if (nouveau_context_init(&nv50->base, &screen->base))
+   if (nouveau_context_init(&nv50->base, &screen->base, screen->base.channel))
       goto out_err;
 
    ret = nouveau_bufctx_new(nv50->base.client, 2, &nv50->bufctx);

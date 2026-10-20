@@ -230,7 +230,7 @@ nvc0_push_setup_vertex_array(struct nvc0_context *nvc0, const unsigned count)
    PUSH_DATAh(push, va);
    PUSH_DATA (push, va);
 
-   if (nvc0->screen->eng3d->oclass < TU102_3D_CLASS)
+   if (nvc0->screen->base.class_3d < TU102_3D_CLASS)
       BEGIN_NVC0(push, NVC0_3D(VERTEX_ARRAY_LIMIT_HIGH(0)), 2);
    else
       BEGIN_NVC0(push, SUBC_3D(TU102_3D_VERTEX_ARRAY_LIMIT_HIGH(0)), 2);
@@ -500,7 +500,6 @@ nvc0_push_vbo_indirect(struct nvc0_context *nvc0, const struct pipe_draw_info *i
     * and do the draws. This is suboptimal, but will only happen in the case
     * that conversion is required for FIXED or DOUBLE inputs.
     */
-   struct nvc0_screen *screen = nvc0->screen;
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nv04_resource *buf = nv04_resource(indirect->buffer);
    struct nv04_resource *buf_count = nv04_resource(indirect->indirect_draw_count);
@@ -538,8 +537,8 @@ nvc0_push_vbo_indirect(struct nvc0_context *nvc0, const struct pipe_draw_info *i
          PUSH_SPACE(push, 9);
          BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
          PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-         PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
-         PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
+         PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
+         PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(0));
          BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 3);
          PUSH_DATA (push, NVC0_CB_AUX_DRAW_INFO);
          PUSH_DATA (push, sdraw.index_bias);
@@ -627,7 +626,7 @@ nvc0_push_vbo(struct nvc0_context *nvc0, const struct pipe_draw_info *info,
       if (unlikely(ctx.need_vertex_id))
          nvc0_push_upload_vertex_ids(&ctx, nvc0, info, draw);
 
-      if (nvc0->screen->eng3d->oclass < GM107_3D_CLASS)
+      if (nvc0->screen->base.class_3d < GM107_3D_CLASS)
          IMMED_NVC0(ctx.push, NVC0_3D(VERTEX_ARRAY_FLUSH), 0);
       BEGIN_NVC0(ctx.push, NVC0_3D(VERTEX_BEGIN_GL), 1);
       PUSH_DATA (ctx.push, prim);
@@ -784,7 +783,7 @@ nvc0_push_upload_vertex_ids(struct push_context *ctx,
    PUSH_DATAh(push, va);
    PUSH_DATA (push, va);
 
-   if (nvc0->screen->eng3d->oclass < TU102_3D_CLASS)
+   if (nvc0->screen->base.class_3d < TU102_3D_CLASS)
       BEGIN_NVC0(push, NVC0_3D(VERTEX_ARRAY_LIMIT_HIGH(1)), 2);
    else
       BEGIN_NVC0(push, SUBC_3D(TU102_3D_VERTEX_ARRAY_LIMIT_HIGH(1)), 2);

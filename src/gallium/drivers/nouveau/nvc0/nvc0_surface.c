@@ -704,7 +704,6 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
    unsigned i, j, k;
    uint32_t mode = 0;
 
-   simple_mtx_lock(&nvc0->screen->state_lock);
 
    /* don't need NEW_BLEND, COLOR_MASK doesn't affect CLEAR_BUFFERS */
    if (!nvc0_state_validate_3d(nvc0, NVC0_NEW_3D_FRAMEBUFFER))
@@ -790,7 +789,6 @@ nvc0_clear(struct pipe_context *pipe, unsigned buffers,
 
 out:
    PUSH_KICK(push);
-   simple_mtx_unlock(&nvc0->screen->state_lock);
 }
 
 static void
@@ -799,11 +797,9 @@ gm200_evaluate_depth_buffer(struct pipe_context *pipe)
    struct nvc0_context *nvc0 = nvc0_context(pipe);
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
 
-   simple_mtx_lock(&nvc0->screen->state_lock);
    nvc0_state_validate_3d(nvc0, NVC0_NEW_3D_FRAMEBUFFER);
    IMMED_NVC0(push, SUBC_3D(0x11fc), 1);
    PUSH_KICK(push);
-   simple_mtx_unlock(&nvc0->screen->state_lock);
 }
 
 
@@ -816,10 +812,6 @@ struct nvc0_blitter
    struct nvc0_program *vp;
 
    struct nv50_tsc_entry sampler[2]; /* nearest, bilinear */
-
-   mtx_t mutex;
-
-   struct nvc0_screen *screen;
 };
 
 struct nvc0_blitctx
@@ -924,21 +916,17 @@ nvc0_blitter_make_sampler(struct nvc0_blitter *blit)
 static void
 nvc0_blit_select_vp(struct nvc0_blitctx *ctx)
 {
-   struct nvc0_blitter *blitter = ctx->nvc0->screen->blitter;
+   struct nvc0_blitter *blitter = ctx->nvc0->blitter;
 
-   if (!blitter->vp) {
-      mtx_lock(&blitter->mutex);
-      if (!blitter->vp)
-         blitter->vp = nvc0_blitter_make_vp(&ctx->nvc0->base.pipe);
-      mtx_unlock(&blitter->mutex);
-   }
+   if (!blitter->vp)
+      blitter->vp = nvc0_blitter_make_vp(&ctx->nvc0->base.pipe);
    ctx->vp = blitter->vp;
 }
 
 static void
 nvc0_blit_select_fp(struct nvc0_blitctx *ctx, const struct pipe_blit_info *info)
 {
-   struct nvc0_blitter *blitter = ctx->nvc0->screen->blitter;
+   struct nvc0_blitter *blitter = ctx->nvc0->blitter;
 
    const enum pipe_texture_target ptarg =
       nv50_blit_reinterpret_pipe_texture_target(info->src.resource->target);
@@ -946,13 +934,9 @@ nvc0_blit_select_fp(struct nvc0_blitctx *ctx, const struct pipe_blit_info *info)
    const unsigned targ = nv50_blit_texture_type(ptarg);
    const unsigned mode = ctx->mode;
 
-   if (!blitter->fp[targ][mode]) {
-      mtx_lock(&blitter->mutex);
-      if (!blitter->fp[targ][mode])
-         blitter->fp[targ][mode] =
-            nv50_blitter_make_fp(&ctx->nvc0->base.pipe, mode, ptarg);
-      mtx_unlock(&blitter->mutex);
-   }
+   if (!blitter->fp[targ][mode])
+      blitter->fp[targ][mode] =
+         nv50_blitter_make_fp(&ctx->nvc0->base.pipe, mode, ptarg);
    ctx->fp = blitter->fp[targ][mode];
 }
 
@@ -1086,7 +1070,7 @@ nvc0_blitctx_pre_blit(struct nvc0_blitctx *ctx,
                       const struct pipe_blit_info *info)
 {
    struct nvc0_context *nvc0 = ctx->nvc0;
-   struct nvc0_blitter *blitter = nvc0->screen->blitter;
+   struct nvc0_blitter *blitter = nvc0->blitter;
    int s;
 
    ctx->saved.fb.width = nvc0->framebuffer.width;
@@ -1311,7 +1295,7 @@ nvc0_blit_3d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
 
    bool serialize = false;
    struct nv50_miptree *mt = nv50_miptree(dst);
-   if (screen->eng3d->oclass >= TU102_3D_CLASS) {
+   if (screen->base.class_3d >= TU102_3D_CLASS) {
       IMMED_NVC0(push, SUBC_3D(TU102_3D_SET_COLOR_RENDER_TO_ZETA_SURFACE),
                  util_format_is_depth_or_stencil(info->dst.format));
    } else {
@@ -1380,7 +1364,7 @@ nvc0_blit_3d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
    BCTX_REFN_bo(nvc0->bufctx_3d, 3D_VTX_TMP,
                 NOUVEAU_BO_GART | NOUVEAU_BO_RD, vtxbuf_bo);
    BCTX_REFN_bo(nvc0->bufctx_3d, 3D_TEXT,
-                NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD, screen->text);
+                NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD, nvc0->text);
    PUSH_VAL(push);
 
    BEGIN_NVC0(push, NVC0_3D(VERTEX_ARRAY_FETCH(0)), 4);
@@ -1389,7 +1373,7 @@ nvc0_blit_3d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
    PUSH_DATAh(push, vtxbuf);
    PUSH_DATA (push, vtxbuf);
    PUSH_DATA (push, 0);
-   if (screen->eng3d->oclass < TU102_3D_CLASS)
+   if (screen->base.class_3d < TU102_3D_CLASS)
       BEGIN_NVC0(push, NVC0_3D(VERTEX_ARRAY_LIMIT_HIGH(0)), 2);
    else
       BEGIN_NVC0(push, SUBC_3D(TU102_3D_VERTEX_ARRAY_LIMIT_HIGH(0)), 2);
@@ -1469,7 +1453,7 @@ nvc0_blit_3d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
 
    /* restore viewport transform */
    IMMED_NVC0(push, NVC0_3D(VIEWPORT_TRANSFORM_EN), 1);
-   if (screen->eng3d->oclass >= TU102_3D_CLASS)
+   if (screen->base.class_3d >= TU102_3D_CLASS)
       IMMED_NVC0(push, SUBC_3D(TU102_3D_SET_COLOR_RENDER_TO_ZETA_SURFACE), 0);
    else if (serialize)
       /* mark the surface as reading, which will force a serialize next time
@@ -1742,8 +1726,7 @@ nvc0_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
    if (info->num_window_rectangles > 0 || info->window_rectangle_include)
       eng3d = true;
 
-   simple_mtx_lock(&nvc0->screen->state_lock);
-   if (nvc0->screen->num_occlusion_queries_active)
+   if (nvc0->num_occlusion_queries_active)
       IMMED_NVC0(push, NVC0_3D(SAMPLECNT_ENABLE), 0);
 
    if (!eng3d)
@@ -1751,10 +1734,9 @@ nvc0_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
    else
       nvc0_blit_3d(nvc0, info);
 
-   if (nvc0->screen->num_occlusion_queries_active)
+   if (nvc0->num_occlusion_queries_active)
       IMMED_NVC0(push, NVC0_3D(SAMPLECNT_ENABLE), 1);
    PUSH_KICK(push);
-   simple_mtx_unlock(&nvc0->screen->state_lock);
 
    NOUVEAU_DRV_STAT(&nvc0->screen->base, tex_blit_count, 1);
 }
@@ -1770,8 +1752,7 @@ nvc0_flush_resource(struct pipe_context *ctx,
    struct pipe_resource templ = *resource;
    struct pipe_resource *res;
    struct nv50_miptree *tmp;
-   bool flush = false;
-   unsigned l, i;
+   unsigned l;
 
    /* No VRAM: the kernel won't export a compressed buffer, so a resource about
     * to be shared moves to the storage a shared one is created with. */
@@ -1784,10 +1765,15 @@ nvc0_flush_resource(struct pipe_context *ctx,
           nvc0_choose_tiled_storage_type(ctx->screen, resource->format, ms, false))
       return;
 
+   simple_mtx_lock(&screen->storage_lock);
+   /* another context may have got here first */
+   if (resource->bind & PIPE_BIND_SHARED)
+      goto out;
+
    templ.bind |= PIPE_BIND_SHARED;
    res = nvc0_miptree_create(ctx->screen, &templ, NULL, 0);
    if (!res)
-      return;
+      goto out;
    tmp = nv50_miptree(res);
 
    for (l = 0; l <= templ.last_level; ++l) {
@@ -1808,49 +1794,40 @@ nvc0_flush_resource(struct pipe_context *ctx,
    nouveau_fence_ref(nvc0->base.fence, &tmp->base.fence, &screen->base);
    pipe_resource_reference(&res, NULL);
 
-   /* Every context rebinds its views and surfaces; bindless handles never
-    * revalidate, so TIC slots and Kepler image handles get the new address. */
-   simple_mtx_lock(&screen->state_lock);
-   nvc0_switch_pipe_context(nvc0);
-   for (i = 0; i < NVC0_TIC_MAX_ENTRIES; ++i) {
-      struct nv50_tic_entry *tic = screen->tic.entries[i];
-      if (tic && tic->pipe.texture == resource)
-         flush |= nvc0_update_tic(nvc0, tic, &mt->base);
-   }
-   if (flush)
-      IMMED_NVC0(nvc0->base.pushbuf, NVC0_3D(TIC_FLUSH), 0);
-   nve4_update_image_handles(nvc0, resource);
-   simple_mtx_unlock(&screen->state_lock);
+   /* every context rebinds on its next validate */
+   p_atomic_inc(&screen->storage_seq);
+out:
+   simple_mtx_unlock(&screen->storage_lock);
 }
 
 bool
-nvc0_blitter_create(struct nvc0_screen *screen)
+nvc0_blitter_create(struct nvc0_context *nvc0)
 {
-   screen->blitter = CALLOC_STRUCT(nvc0_blitter);
-   if (!screen->blitter) {
+   nvc0->blitter = CALLOC_STRUCT(nvc0_blitter);
+   if (!nvc0->blitter) {
       NOUVEAU_ERR("failed to allocate blitter struct\n");
       return false;
    }
-   screen->blitter->screen = screen;
 
-   (void) mtx_init(&screen->blitter->mutex, mtx_plain);
-
-   nvc0_blitter_make_sampler(screen->blitter);
+   nvc0_blitter_make_sampler(nvc0->blitter);
 
    return true;
 }
 
 void
-nvc0_blitter_destroy(struct nvc0_screen *screen)
+nvc0_blitter_destroy(struct nvc0_context *nvc0)
 {
-   struct nvc0_blitter *blitter = screen->blitter;
+   struct nvc0_blitter *blitter = nvc0->blitter;
    unsigned i, m;
+
+   if (!blitter)
+      return;
 
    for (i = 0; i < NV50_BLIT_MAX_TEXTURE_TYPES; ++i) {
       for (m = 0; m < NV50_BLIT_MODES; ++m) {
          struct nvc0_program *prog = blitter->fp[i][m];
          if (prog) {
-            nvc0_program_destroy(NULL, prog);
+            nvc0_program_destroy(nvc0, prog);
             ralloc_free((void *)prog->nir);
             FREE(prog);
          }
@@ -1858,12 +1835,11 @@ nvc0_blitter_destroy(struct nvc0_screen *screen)
    }
    if (blitter->vp) {
       struct nvc0_program *prog = blitter->vp;
-      nvc0_program_destroy(NULL, prog);
+      nvc0_program_destroy(nvc0, prog);
       ralloc_free((void *)prog->nir);
       FREE(prog);
    }
 
-   mtx_destroy(&blitter->mutex);
    FREE(blitter);
 }
 

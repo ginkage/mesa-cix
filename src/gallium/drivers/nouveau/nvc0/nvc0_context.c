@@ -243,14 +243,6 @@ nvc0_destroy(struct pipe_context *pipe)
 {
    struct nvc0_context *nvc0 = nvc0_context(pipe);
 
-   simple_mtx_lock(&nvc0->screen->state_lock);
-   if (nvc0->screen->cur_ctx == nvc0) {
-      nvc0->screen->cur_ctx = NULL;
-      nvc0->screen->save_state = nvc0->state;
-      nvc0->screen->save_state.tfb = NULL;
-   }
-   simple_mtx_unlock(&nvc0->screen->state_lock);
-
    if (nvc0->base.pipe.stream_uploader)
       u_upload_destroy(nvc0->base.pipe.stream_uploader);
 
@@ -262,19 +254,31 @@ nvc0_destroy(struct pipe_context *pipe)
 
    nvc0_context_unreference_resources(nvc0);
    nvc0_blitctx_destroy(nvc0);
+   nvc0_blitter_destroy(nvc0);
+   if (nvc0->pm_prog) {
+      nvc0->pm_prog->code = NULL; /* hardcoded, don't FREE */
+      nvc0_program_destroy(nvc0, nvc0->pm_prog);
+      FREE(nvc0->pm_prog);
+   }
 
    list_for_each_entry_safe(struct nvc0_resident, pos, &nvc0->tex_head, list) {
       list_del(&pos->list);
-      free(pos);
+      nvc0_screen_bindless_put(nvc0->screen, pos->index);
+      FREE(pos);
    }
 
    list_for_each_entry_safe(struct nvc0_resident, pos, &nvc0->img_head, list) {
       list_del(&pos->list);
-      free(pos);
+      nvc0_screen_bindless_put(nvc0->screen, pos->index);
+      FREE(pos);
    }
 
    nouveau_fence_cleanup(&nvc0->base);
+   nvc0_screen_fini_context(nvc0);
+   struct nouveau_object *chan = nvc0->chan;
+   struct nvc0_screen *screen = nvc0->screen;
    nouveau_context_destroy(&nvc0->base);
+   nvc0_screen_put_channel(screen, &chan);
 }
 
 bool
@@ -421,11 +425,16 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    if (!nvc0)
       return NULL;
    pipe = &nvc0->base.pipe;
+   nvc0->screen = screen;
 
    if (!nvc0_blitctx_create(nvc0))
       goto out_err;
 
-   if (nouveau_context_init(&nvc0->base, &screen->base))
+   if (nvc0_screen_get_channel(screen, &nvc0->chan))
+      goto out_err;
+   if (nouveau_context_init(&nvc0->base, &screen->base, nvc0->chan))
+      goto out_err;
+   if (nouveau_pushbuf_order(nvc0->base.pushbuf))
       goto out_err;
    nvc0->base.kick_notify = nvc0_default_kick_notify;
    nvc0->base.pushbuf->rsvd_kick = 5;
@@ -440,7 +449,6 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    if (ret)
       goto out_err;
 
-   nvc0->screen = screen;
    pipe->screen = pscreen;
    pipe->priv = priv;
    pipe->stream_uploader = u_upload_create_default(pipe);
@@ -481,13 +489,17 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    pipe->create_video_codec = nvc0_create_decoder;
    pipe->create_video_buffer = nvc0_video_buffer_create;
 
-   /* shader builtin library is per-screen, but we need a context for m2mf */
+   if (!nouveau_fence_new(&nvc0->base, &nvc0->base.fence))
+      goto out_err;
+
+   if (nvc0_screen_init_context(nvc0))
+      goto out_err;
+   if (!nvc0_blitter_create(nvc0))
+      goto out_err;
+
    nvc0_program_library_upload(nvc0);
    nvc0_program_init_tcp_empty(nvc0);
    if (!nvc0->tcp_empty)
-      goto out_err;
-
-   if (!nouveau_fence_new(&nvc0->base, &nvc0->base.fence))
       goto out_err;
 
    /* set the empty tctl prog on next draw in case one is never set */
@@ -498,15 +510,7 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
     * a grid is launched later. */
    nvc0->dirty_cp |= NVC0_NEW_CP_DRIVERCONST;
 
-   /* now that there are no more opportunities for errors, set the current
-    * context if there isn't already one.
-    */
-   simple_mtx_lock(&screen->state_lock);
-   if (!screen->cur_ctx) {
-      nvc0->state = screen->save_state;
-      screen->cur_ctx = nvc0;
-   }
-   simple_mtx_unlock(&screen->state_lock);
+   nvc0->storage_seq = p_atomic_read(&screen->storage_seq);
 
    nouveau_pushbuf_bufctx(nvc0->base.pushbuf, nvc0->bufctx);
    PUSH_SPACE(nvc0->base.pushbuf, 8);
@@ -515,25 +519,25 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
 
    flags = NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD;
 
-   BCTX_REFN_bo(nvc0->bufctx_3d, 3D_SCREEN, flags, screen->uniform_bo);
-   BCTX_REFN_bo(nvc0->bufctx_3d, 3D_SCREEN, flags, screen->txc);
-   if (screen->compute) {
-      BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, screen->uniform_bo);
-      BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, screen->txc);
+   BCTX_REFN_bo(nvc0->bufctx_3d, 3D_SCREEN, flags, nvc0->uniform_bo);
+   BCTX_REFN_bo(nvc0->bufctx_3d, 3D_SCREEN, flags, nvc0->txc);
+   if (screen->class_compute) {
+      BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, nvc0->uniform_bo);
+      BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, nvc0->txc);
    }
 
    flags = NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RDWR;
 
    if (screen->poly_cache)
       BCTX_REFN_bo(nvc0->bufctx_3d, 3D_SCREEN, flags, screen->poly_cache);
-   if (screen->compute)
+   if (screen->class_compute)
       BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, screen->tls);
 
    flags = NOUVEAU_BO_GART | NOUVEAU_BO_WR;
 
    BCTX_REFN_bo(nvc0->bufctx_3d, 3D_SCREEN, flags, screen->fence.bo);
    BCTX_REFN_bo(nvc0->bufctx, FENCE, flags, screen->fence.bo);
-   if (screen->compute)
+   if (screen->class_compute)
       BCTX_REFN_bo(nvc0->bufctx_cp, CP_SCREEN, flags, screen->fence.bo);
 
    nvc0->base.scratch.bo_size = 2 << 20;
@@ -549,8 +553,7 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    // NOTE: Preliminary testing suggests that this isn't necessary at all at
    // least on GM20x (untested on Kepler). However this is ~free, so no reason
    // not to do it.
-   if (!screen->tsc.entries[0])
-      nvc0_upload_tsc0(nvc0);
+   nvc0_upload_tsc0(nvc0);
 
    // On Fermi, mark samplers dirty so that the proper binding can happen
    if (screen->base.class_3d < NVE4_3D_CLASS) {
@@ -572,6 +575,12 @@ out_err:
          nouveau_bufctx_del(&nvc0->bufctx_cp);
       if (nvc0->bufctx)
          nouveau_bufctx_del(&nvc0->bufctx);
+      nvc0_blitter_destroy(nvc0);
+      nouveau_fence_ref(NULL, &nvc0->base.fence, &screen->base);
+      nvc0_screen_fini_context(nvc0);
+      nouveau_pushbuf_destroy(&nvc0->base.pushbuf);
+      nouveau_client_del(&nvc0->base.client);
+      nvc0_screen_put_channel(screen, &nvc0->chan);
       FREE(nvc0->blit);
       FREE(nvc0);
    }

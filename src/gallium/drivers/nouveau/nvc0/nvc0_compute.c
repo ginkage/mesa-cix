@@ -27,13 +27,14 @@
 #include "nvc0/nvc0_compute.xml.h"
 
 int
-nvc0_screen_compute_setup(struct nvc0_screen *screen,
-                          struct nouveau_pushbuf *push)
+nvc0_screen_compute_setup(struct nvc0_context *nvc0)
 {
+   struct nvc0_screen *screen = nvc0->screen;
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    int i;
 
    BEGIN_NVC0(push, SUBC_CP(NV01_SUBCHAN_OBJECT), 1);
-   PUSH_DATA (push, screen->compute->oclass);
+   PUSH_DATA (push, screen->class_compute);
 
    /* hardware limit */
    BEGIN_NVC0(push, NVC0_CP(MP_LIMIT), 1);
@@ -75,26 +76,26 @@ nvc0_screen_compute_setup(struct nvc0_screen *screen,
 
    /* code segment setup */
    BEGIN_NVC0(push, NVC0_CP(CODE_ADDRESS_HIGH), 2);
-   PUSH_DATAh(push, screen->text->offset);
-   PUSH_DATA (push, screen->text->offset);
+   PUSH_DATAh(push, nvc0->text->offset);
+   PUSH_DATA (push, nvc0->text->offset);
 
    /* textures */
    BEGIN_NVC0(push, NVC0_CP(TIC_ADDRESS_HIGH), 3);
-   PUSH_DATAh(push, screen->txc->offset);
-   PUSH_DATA (push, screen->txc->offset);
+   PUSH_DATAh(push, nvc0->txc->offset);
+   PUSH_DATA (push, nvc0->txc->offset);
    PUSH_DATA (push, NVC0_TIC_MAX_ENTRIES - 1);
 
    /* samplers */
    BEGIN_NVC0(push, NVC0_CP(TSC_ADDRESS_HIGH), 3);
-   PUSH_DATAh(push, screen->txc->offset + 65536);
-   PUSH_DATA (push, screen->txc->offset + 65536);
+   PUSH_DATAh(push, nvc0->txc->offset + 65536);
+   PUSH_DATA (push, nvc0->txc->offset + 65536);
    PUSH_DATA (push, NVC0_TSC_MAX_ENTRIES - 1);
 
    /* MS sample coordinate offsets */
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
-   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
    BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + 2 * 8);
    PUSH_DATA (push, NVC0_CB_AUX_MS_INFO);
    PUSH_DATA (push, 0); /* 0 */
@@ -174,7 +175,7 @@ nvc0_compute_validate_constbufs(struct nvc0_context *nvc0)
       nvc0->constbuf_dirty[s] &= ~(1 << i);
 
       if (nvc0->constbuf[s][i].user) {
-         struct nouveau_bo *bo = nvc0->screen->uniform_bo;
+         struct nouveau_bo *bo = nvc0->uniform_bo;
          const unsigned base = NVC0_CB_USR_INFO(s);
          const unsigned size = nvc0->constbuf[s][0].size;
          assert(i == 0); /* we really only want OpenGL uniforms here */
@@ -227,12 +228,11 @@ static void
 nvc0_compute_validate_driverconst(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nvc0_screen *screen = nvc0->screen;
 
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
-   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
    BEGIN_NVC0(push, NVC0_CP(CB_BIND), 1);
    PUSH_DATA (push, (15 << 8) | 1);
 
@@ -243,7 +243,6 @@ static void
 nvc0_compute_validate_buffers(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nvc0_screen *screen = nvc0->screen;
    const int s = 5;
    int i;
 
@@ -251,8 +250,8 @@ nvc0_compute_validate_buffers(struct nvc0_context *nvc0)
 
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
-   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+   PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+   PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
    BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + 4 * NVC0_MAX_BUFFERS);
    PUSH_DATA (push, NVC0_CB_AUX_BUF_INFO(0));
 
@@ -368,12 +367,11 @@ nvc0_compute_upload_input(struct nvc0_context *nvc0,
                           const struct pipe_grid_info *info)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nvc0_screen *screen = nvc0->screen;
 
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
    PUSH_DATA (push, NVC0_CB_AUX_SIZE);
-   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
-   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATAh(push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATA (push, nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
 
    BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + 1);
    /* (7) as we only upload work_dim on nvc0, the rest uses special regs */
@@ -394,7 +392,6 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    uint32_t tex_cache_seq;
    int ret;
 
-   simple_mtx_lock(&screen->state_lock);
    nvc0->base.kick_notify = nvc0_same_fence_kick_notify;
    ret = !nvc0_state_validate_cp(nvc0, ~0);
    if (ret) {
@@ -440,13 +437,14 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    PUSH_DATA (push, info->block[2]);
 
    PUSH_SPACE_EX(push, 32, 2, 1);
-   PUSH_REF1(push, screen->text, NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD);
+   PUSH_REF1(push, nvc0->text, NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD);
 
    if (unlikely(info->indirect)) {
       struct nv04_resource *res = nv04_resource(info->indirect);
       uint32_t offset = res->offset + info->indirect_offset;
       unsigned macro = NVC0_CP_MACRO_LAUNCH_GRID_INDIRECT;
 
+      nvc0_resource_validate(nvc0, res, NOUVEAU_BO_RD);
       PUSH_REF1(push, res->bo, NOUVEAU_BO_RD | res->domain);
       PUSH_DATA(push, NVC0_FIFO_PKHDR_1I(1, macro, 3));
       nouveau_pushbuf_data(push, res->bo, offset,
@@ -481,7 +479,6 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
 out:
    PUSH_KICK(push);
    nvc0->base.kick_notify = nvc0_default_kick_notify;
-   simple_mtx_unlock(&screen->state_lock);
 }
 
 static void
@@ -491,6 +488,7 @@ nvc0_compute_update_indirect_invocations(struct nvc0_context *nvc0,
    struct nv04_resource *res = nv04_resource(info->indirect);
    uint32_t offset = res->offset + info->indirect_offset;
 
+   nvc0_resource_validate(nvc0, res, NOUVEAU_BO_RD);
    PUSH_SPACE_EX(push, 16, 0, 8);
    PUSH_REF1(push, res->bo, NOUVEAU_BO_RD | res->domain);
    BEGIN_1IC0(push, NVC0_3D(MACRO_COMPUTE_COUNTER), 7);

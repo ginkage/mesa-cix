@@ -41,15 +41,16 @@
 #define NVC3C0_QMDV02_02_DEF_SET(p,a...) NVDEF_MW_SET((p), NVC3C0, QMDV02_02, ##a)
 
 int
-nve4_screen_compute_setup(struct nvc0_screen *screen,
-                          struct nouveau_pushbuf *push)
+nve4_screen_compute_setup(struct nvc0_context *nvc0)
 {
+   struct nvc0_screen *screen = nvc0->screen;
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    int i;
-   uint32_t obj_class = screen->compute->oclass;
+   uint32_t obj_class = screen->class_compute;
    uint64_t address;
 
    BEGIN_NVC0(push, SUBC_CP(NV01_SUBCHAN_OBJECT), 1);
-   PUSH_DATA (push, screen->compute->oclass);
+   PUSH_DATA (push, screen->class_compute);
 
    BEGIN_NVC0(push, NVE4_CP(TEMP_ADDRESS_HIGH), 2);
    PUSH_DATAh(push, screen->tls->offset);
@@ -81,8 +82,8 @@ nve4_screen_compute_setup(struct nvc0_screen *screen,
       PUSH_DATA (push, 0xfe << 24);
 
       BEGIN_NVC0(push, NVE4_CP(CODE_ADDRESS_HIGH), 2);
-      PUSH_DATAh(push, screen->text->offset);
-      PUSH_DATA (push, screen->text->offset);
+      PUSH_DATAh(push, nvc0->text->offset);
+      PUSH_DATA (push, nvc0->text->offset);
    } else {
       BEGIN_NVC0(push, SUBC_CP(0x2a0), 2);
       PUSH_DATAh(push, 0xfeULL << 24);
@@ -97,12 +98,12 @@ nve4_screen_compute_setup(struct nvc0_screen *screen,
 
    /* NOTE: these do not affect the state used by the 3D object */
    BEGIN_NVC0(push, NVE4_CP(TIC_ADDRESS_HIGH), 3);
-   PUSH_DATAh(push, screen->txc->offset);
-   PUSH_DATA (push, screen->txc->offset);
+   PUSH_DATAh(push, nvc0->txc->offset);
+   PUSH_DATA (push, nvc0->txc->offset);
    PUSH_DATA (push, NVC0_TIC_MAX_ENTRIES - 1);
    BEGIN_NVC0(push, NVE4_CP(TSC_ADDRESS_HIGH), 3);
-   PUSH_DATAh(push, screen->txc->offset + 65536);
-   PUSH_DATA (push, screen->txc->offset + 65536);
+   PUSH_DATAh(push, nvc0->txc->offset + 65536);
+   PUSH_DATA (push, nvc0->txc->offset + 65536);
    PUSH_DATA (push, NVC0_TSC_MAX_ENTRIES - 1);
 
    if (obj_class >= NVF0_COMPUTE_CLASS) {
@@ -125,7 +126,7 @@ nve4_screen_compute_setup(struct nvc0_screen *screen,
       IMMED_NVC0(push, SUBC_CP(0x02c4), 1);
    */
 
-   address = screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5);
 
    /* MS sample coordinate offsets: these do not work with _ALT modes ! */
    BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
@@ -183,8 +184,7 @@ gm107_compute_validate_surfaces(struct nvc0_context *nvc0,
 {
    struct nv04_resource *res = nv04_resource(view->resource);
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nvc0_screen *screen = nvc0->screen;
-   struct nouveau_bo *txc = nvc0->screen->txc;
+   struct nouveau_bo *txc = nvc0->txc;
    struct nv50_tic_entry *tic;
    uint64_t address;
    const int s = 5;
@@ -195,7 +195,7 @@ gm107_compute_validate_surfaces(struct nvc0_context *nvc0,
    nvc0_update_tic(nvc0, tic, res);
 
    if (tic->id < 0) {
-      tic->id = nvc0_screen_tic_alloc(nvc0->screen, tic);
+      tic->id = nvc0_screen_tic_alloc(nvc0, tic);
 
       /* upload the texture view */
       PUSH_SPACE(push, 16);
@@ -216,7 +216,7 @@ gm107_compute_validate_surfaces(struct nvc0_context *nvc0,
       BEGIN_NIC0(push, NVE4_CP(TEX_CACHE_CTL), 1);
       PUSH_DATA (push, (tic->id << 4) | 1);
    }
-   nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
+   nvc0->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
    res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
    res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |
@@ -224,7 +224,7 @@ gm107_compute_validate_surfaces(struct nvc0_context *nvc0,
 
    BCTX_REFN(nvc0->bufctx_cp, CP_SUF, res, RD);
 
-   address = screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
 
    /* upload the texture handle */
    BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
@@ -254,7 +254,7 @@ nve4_compute_validate_surfaces(struct nvc0_context *nvc0)
 
    nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_SUF);
 
-   address = nvc0->screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
 
    for (i = 0; i < NVC0_MAX_IMAGES; ++i) {
       struct pipe_image_view *view = &nvc0->images[s][i];
@@ -316,7 +316,6 @@ static void
 nve4_compute_set_tex_handles(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nvc0_screen *screen = nvc0->screen;
    uint64_t address;
    const unsigned s = nvc0_shader_stage(MESA_SHADER_COMPUTE);
    unsigned i, n;
@@ -328,7 +327,7 @@ nve4_compute_set_tex_handles(struct nvc0_context *nvc0)
    n = util_logbase2(dirty) + 1 - i;
    assert(n);
 
-   address = screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
 
    BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
    PUSH_DATAh(push, address + NVC0_CB_AUX_TEX_INFO(i));
@@ -358,7 +357,7 @@ nve4_compute_validate_constbufs(struct nvc0_context *nvc0)
       nvc0->constbuf_dirty[s] &= ~(1 << i);
 
       if (nvc0->constbuf[s][i].user) {
-         struct nouveau_bo *bo = nvc0->screen->uniform_bo;
+         struct nouveau_bo *bo = nvc0->uniform_bo;
          const unsigned base = NVC0_CB_USR_INFO(s);
          const unsigned size = nvc0->constbuf[s][0].size;
          assert(i == 0); /* we really only want OpenGL uniforms here */
@@ -379,7 +378,7 @@ nve4_compute_validate_constbufs(struct nvc0_context *nvc0)
             nv04_resource(nvc0->constbuf[s][i].u.buf);
          if (res) {
             uint64_t address
-               = nvc0->screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
+               = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
 
             /* constbufs above 0 will are fetched via ubo info in the shader */
             if (i > 0) {
@@ -419,7 +418,7 @@ nve4_compute_validate_buffers(struct nvc0_context *nvc0)
 
    nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_BUF);
 
-   address = nvc0->screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(s);
 
    BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
    PUSH_DATAh(push, address + NVC0_CB_AUX_BUF_INFO(0));
@@ -485,11 +484,10 @@ static void
 nve4_compute_upload_input(struct nvc0_context *nvc0,
                           const struct pipe_grid_info *info)
 {
-   struct nvc0_screen *screen = nvc0->screen;
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    uint64_t address;
 
-   address = screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5);
+   address = nvc0->uniform_bo->offset + NVC0_CB_AUX_INFO(5);
 
    BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
    PUSH_DATAh(push, address + NVC0_CB_AUX_GRID_INFO(0));
@@ -501,6 +499,8 @@ nve4_compute_upload_input(struct nvc0_context *nvc0,
    if (unlikely(info->indirect)) {
       struct nv04_resource *res = nv04_resource(info->indirect);
       uint32_t offset = res->offset + info->indirect_offset;
+
+      nvc0_resource_validate(nvc0, res, NOUVEAU_BO_RD);
 
       PUSH_SPACE_EX(push, 32, 0, 1);
       PUSH_REF1(push, res->bo, NOUVEAU_BO_RD | res->domain);
@@ -582,7 +582,6 @@ static void
 nve4_compute_setup_launch_desc(struct nvc0_context *nvc0, uint32_t *qmd,
                                const struct pipe_grid_info *info)
 {
-   const struct nvc0_screen *screen = nvc0->screen;
    const struct nvc0_program *cp = nvc0->compprog;
    uint32_t shared_size = cp->cp.smem_size + info->variable_shared_mem;
 
@@ -628,14 +627,14 @@ nve4_compute_setup_launch_desc(struct nvc0_context *nvc0, uint32_t *qmd,
    // launch descriptor because UBOs are sticked to the driver cb to avoid the
    // limitation of 8 CBs.
    if (nvc0->constbuf[5][0].user) {
-      nve4_cp_launch_desc_set_cb(qmd, 0, screen->uniform_bo,
+      nve4_cp_launch_desc_set_cb(qmd, 0, nvc0->uniform_bo,
                                  NVC0_CB_USR_INFO(5), 1 << 16);
 
       // Later logic will attempt to bind a real buffer at position 0. That
       // should not happen if we've bound a user buffer.
       assert(nvc0->constbuf[5][0].user || !nvc0->constbuf[5][0].u.buf);
    }
-   nve4_cp_launch_desc_set_cb(qmd, 7, screen->uniform_bo,
+   nve4_cp_launch_desc_set_cb(qmd, 7, nvc0->uniform_bo,
                               NVC0_CB_AUX_INFO(5), 1 << 11);
 
    nve4_compute_setup_buf_cb(nvc0, false, qmd);
@@ -645,7 +644,6 @@ static void
 gp100_compute_setup_launch_desc(struct nvc0_context *nvc0, uint32_t *qmd,
                                 const struct pipe_grid_info *info)
 {
-   const struct nvc0_screen *screen = nvc0->screen;
    const struct nvc0_program *cp = nvc0->compprog;
    uint32_t shared_size = cp->cp.smem_size + info->variable_shared_mem;
 
@@ -675,14 +673,14 @@ gp100_compute_setup_launch_desc(struct nvc0_context *nvc0, uint32_t *qmd,
    // launch descriptor because UBOs are sticked to the driver cb to avoid the
    // limitation of 8 CBs.
    if (nvc0->constbuf[5][0].user) {
-      gp100_cp_launch_desc_set_cb(qmd, 0, screen->uniform_bo,
+      gp100_cp_launch_desc_set_cb(qmd, 0, nvc0->uniform_bo,
                                   NVC0_CB_USR_INFO(5), 1 << 16);
 
       // Later logic will attempt to bind a real buffer at position 0. That
       // should not happen if we've bound a user buffer.
       assert(nvc0->constbuf[5][0].user || !nvc0->constbuf[5][0].u.buf);
    }
-   gp100_cp_launch_desc_set_cb(qmd, 7, screen->uniform_bo,
+   gp100_cp_launch_desc_set_cb(qmd, 7, nvc0->uniform_bo,
                                NVC0_CB_AUX_INFO(5), 1 << 11);
 
    nve4_compute_setup_buf_cb(nvc0, true, qmd);
@@ -704,8 +702,7 @@ gv100_compute_setup_launch_desc(struct nvc0_context *nvc0, u32 *qmd,
                                 const struct pipe_grid_info *info)
 {
    struct nvc0_program *cp = nvc0->compprog;
-   struct nvc0_screen *screen = nvc0->screen;
-   uint64_t entry = screen->text->offset + cp->code_base;
+   uint64_t entry = nvc0->text->offset + cp->code_base;
    uint32_t shared_size = cp->cp.smem_size + info->variable_shared_mem;
 
    NVC3C0_QMDV02_02_VAL_SET(qmd, SM_GLOBAL_CACHING_ENABLE, 1);
@@ -736,14 +733,14 @@ gv100_compute_setup_launch_desc(struct nvc0_context *nvc0, u32 *qmd,
    // launch descriptor because UBOs are sticked to the driver cb to avoid the
    // limitation of 8 CBs.
    if (nvc0->constbuf[5][0].user) {
-      gp100_cp_launch_desc_set_cb(qmd, 0, screen->uniform_bo,
+      gp100_cp_launch_desc_set_cb(qmd, 0, nvc0->uniform_bo,
                                   NVC0_CB_USR_INFO(5), 1 << 16);
 
       // Later logic will attempt to bind a real buffer at position 0. That
       // should not happen if we've bound a user buffer.
       assert(nvc0->constbuf[5][0].user || !nvc0->constbuf[5][0].u.buf);
    }
-   gp100_cp_launch_desc_set_cb(qmd, 7, screen->uniform_bo,
+   gp100_cp_launch_desc_set_cb(qmd, 7, nvc0->uniform_bo,
                                NVC0_CB_AUX_INFO(5), 1 << 11);
 
    nve4_compute_setup_buf_cb(nvc0, true, qmd);
@@ -818,16 +815,15 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
                         resident->flags);
    }
 
-   simple_mtx_lock(&screen->state_lock);
    nvc0->base.kick_notify = nvc0_same_fence_kick_notify;
    ret = !nve4_state_validate_cp(nvc0, ~0);
    if (ret)
       goto out_unlock;
 
-   if (nvc0->screen->compute->oclass >= GV100_COMPUTE_CLASS)
+   if (nvc0->screen->class_compute >= GV100_COMPUTE_CLASS)
       gv100_compute_setup_launch_desc(nvc0, desc, info);
    else
-   if (nvc0->screen->compute->oclass >= GP100_COMPUTE_CLASS)
+   if (nvc0->screen->class_compute >= GP100_COMPUTE_CLASS)
       gp100_compute_setup_launch_desc(nvc0, desc, info);
    else
       nve4_compute_setup_launch_desc(nvc0, desc, info);
@@ -837,10 +833,10 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
 #ifndef NDEBUG
    if (debug_get_num_option("NV50_PROG_DEBUG", 0)) {
       debug_printf("Queue Meta Data:\n");
-      if (nvc0->screen->compute->oclass >= GV100_COMPUTE_CLASS)
+      if (nvc0->screen->class_compute >= GV100_COMPUTE_CLASS)
          NVC3C0QmdDump_V02_02(desc);
       else
-      if (nvc0->screen->compute->oclass >= GP100_COMPUTE_CLASS)
+      if (nvc0->screen->class_compute >= GP100_COMPUTE_CLASS)
          NVC0C0QmdDump_V02_01(desc);
       else
          NVA0C0QmdDump_V00_06(desc);
@@ -850,6 +846,8 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    if (unlikely(info->indirect)) {
       struct nv04_resource *res = nv04_resource(info->indirect);
       uint32_t offset = res->offset + info->indirect_offset;
+
+      nvc0_resource_validate(nvc0, res, NOUVEAU_BO_RD);
 
       /* upload the descriptor */
       BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
@@ -862,7 +860,7 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
       PUSH_DATA (push, NVE4_COMPUTE_UPLOAD_EXEC_LINEAR | (0x08 << 1));
       PUSH_DATAp(push, (const uint32_t *)desc, 256 / 4);
 
-      if (nvc0->screen->compute->oclass >= GP100_COMPUTE_CLASS) {
+      if (nvc0->screen->class_compute >= GP100_COMPUTE_CLASS) {
          nve4_upload_indirect_desc(push, res, desc_gpuaddr + 48, 12, offset);
       } else {
          /* overwrite griddim_x and griddim_y as two 32-bits integers even
@@ -877,10 +875,10 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
 
    /* upload descriptor and flush */
    PUSH_SPACE_EX(push, 32, 1, 0);
-   PUSH_REF1(push, screen->text, NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD);
+   PUSH_REF1(push, nvc0->text, NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD);
    BEGIN_NVC0(push, NVE4_CP(LAUNCH_DESC_ADDRESS), 1);
    PUSH_DATA (push, desc_gpuaddr >> 8);
-   if (screen->compute->oclass < GA102_COMPUTE_CLASS) {
+   if (screen->class_compute < GA102_COMPUTE_CLASS) {
       BEGIN_NVC0(push, NVE4_CP(LAUNCH), 1);
       PUSH_DATA (push, 0x3);
    } else {
@@ -896,7 +894,6 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
 out_unlock:
    PUSH_KICK(push);
    nvc0->base.kick_notify = nvc0_default_kick_notify;
-   simple_mtx_unlock(&screen->state_lock);
 
 out:
    if (ret)
@@ -912,7 +909,7 @@ out:
 static void
 nve4_compute_validate_textures(struct nvc0_context *nvc0)
 {
-   struct nouveau_bo *txc = nvc0->screen->txc;
+   struct nouveau_bo *txc = nvc0->txc;
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    const unsigned s = 5;
    unsigned i;
@@ -932,7 +929,7 @@ nve4_compute_validate_textures(struct nvc0_context *nvc0)
       nvc0_update_tic(nvc0, tic, res);
 
       if (tic->id < 0) {
-         tic->id = nvc0_screen_tic_alloc(nvc0->screen, tic);
+         tic->id = nvc0_screen_tic_alloc(nvc0, tic);
 
          PUSH_SPACE(push, 16);
          BEGIN_NVC0(push, NVE4_CP(UPLOAD_DST_ADDRESS_HIGH), 2);
@@ -950,7 +947,7 @@ nve4_compute_validate_textures(struct nvc0_context *nvc0)
       if (res->status & NOUVEAU_BUFFER_STATUS_GPU_WRITING) {
          commands[1][n[1]++] = (tic->id << 4) | 1;
       }
-      nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
+      nvc0->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
       res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
       res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |

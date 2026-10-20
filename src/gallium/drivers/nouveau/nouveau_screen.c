@@ -296,15 +296,34 @@ nouveau_device_uuid(struct pipe_screen *pscreen, char *uuid)
 }
 
 int
-nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
+nouveau_channel_new(struct nouveau_device *dev, struct nouveau_object **pchan)
 {
-   struct pipe_screen *pscreen = &screen->base;
    struct nv04_fifo nv04_data = { .vram = 0xbeef0201, .gart = 0xbeef0202 };
    struct nvc0_fifo nvc0_data = { };
    struct nve0_fifo nve0_data = { .engine = NOUVEAU_FIFO_ENGINE_GR };
-   uint64_t time;
-   int size, ret;
+   int size;
    void *data;
+
+   if (dev->chipset < 0xc0) {
+      data = &nv04_data;
+      size = sizeof(nv04_data);
+   } else if (dev->chipset < 0xe0) {
+      data = &nvc0_data;
+      size = sizeof(nvc0_data);
+   } else {
+      data = &nve0_data;
+      size = sizeof(nve0_data);
+   }
+
+   return nouveau_object_new(&dev->object, 0, NOUVEAU_FIFO_CHANNEL_CLASS, data, size, pchan);
+}
+
+int
+nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
+{
+   struct pipe_screen *pscreen = &screen->base;
+   uint64_t time;
+   int ret;
    union nouveau_bo_config mm_config;
 
    glsl_type_singleton_init_or_ref();
@@ -321,17 +340,6 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    screen->drm = nouveau_drm(&dev->object);
    screen->device = dev;
    screen->initialized = false;
-
-   if (dev->chipset < 0xc0) {
-      data = &nv04_data;
-      size = sizeof(nv04_data);
-   } else if (dev->chipset < 0xe0) {
-      data = &nvc0_data;
-      size = sizeof(nvc0_data);
-   } else {
-      data = &nve0_data;
-      size = sizeof(nve0_data);
-   }
 
    bool enable_svm = debug_get_bool_option("NOUVEAU_SVM", false);
    screen->has_svm = false;
@@ -396,8 +404,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
          screen->vram_domain = NOUVEAU_BO_GART;
    }
 
-   ret = nouveau_object_new(&dev->object, 0, NOUVEAU_FIFO_CHANNEL_CLASS,
-                            data, size, &screen->channel);
+   ret = nouveau_channel_new(dev, &screen->channel);
    if (ret)
       goto err;
 
@@ -503,7 +510,8 @@ nouveau_set_debug_callback(struct pipe_context *pipe,
 }
 
 int
-nouveau_context_init(struct nouveau_context *context, struct nouveau_screen *screen)
+nouveau_context_init(struct nouveau_context *context, struct nouveau_screen *screen,
+                     struct nouveau_object *chan)
 {
    int ret;
 
@@ -514,7 +522,7 @@ nouveau_context_init(struct nouveau_context *context, struct nouveau_screen *scr
    if (ret)
       return ret;
 
-   ret = nouveau_pushbuf_create(screen, context, context->client, screen->channel,
+   ret = nouveau_pushbuf_create(screen, context, context->client, chan,
                                 4, 512 * 1024, &context->pushbuf);
    if (ret)
       return ret;

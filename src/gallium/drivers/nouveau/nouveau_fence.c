@@ -63,9 +63,13 @@ nouveau_fence_trigger_work(struct nouveau_fence *fence)
    struct nouveau_fence_work *work, *tmp;
 
    LIST_FOR_EACH_ENTRY_SAFE(work, tmp, &fence->work, list) {
-      work->func(work->data);
+      /* a caller-owned work may be freed by its func */
+      bool caller_owned = work->caller_owned;
+
       list_del(&work->list);
-      FREE(work);
+      work->func(work->data);
+      if (!caller_owned)
+         FREE(work);
    }
 }
 
@@ -194,7 +198,7 @@ _nouveau_fence_update(struct nouveau_screen *screen, bool flushed)
 
 #define NOUVEAU_FENCE_MAX_SPINS (1 << 31)
 
-static bool
+bool
 _nouveau_fence_signalled(struct nouveau_fence *fence)
 {
    struct nouveau_screen *screen = fence->screen;
@@ -309,6 +313,45 @@ nouveau_fence_unref_bo(void *data)
    nouveau_bo_ref(NULL, &bo);
 }
 
+struct nouveau_fence_bo_work {
+   struct nouveau_fence_work work;
+   struct nouveau_bo *bo;
+};
+
+static void
+nouveau_fence_bo_work(void *data)
+{
+   struct nouveau_fence_bo_work *w = data;
+
+   nouveau_bo_ref(NULL, &w->bo);
+   FREE(w);
+}
+
+/* Unlike nouveau_fence_work(), never submits the fence's pushbuf: the fence
+ * may be another context's. */
+bool
+nouveau_fence_unref_bo_after(struct nouveau_fence *fence, struct nouveau_bo *bo)
+{
+   struct nouveau_fence_bo_work *w;
+
+   if (!fence) {
+      nouveau_bo_ref(NULL, &bo);
+      return true;
+   }
+   w = CALLOC_STRUCT(nouveau_fence_bo_work);
+   if (!w)
+      return false;
+   w->work.func = nouveau_fence_bo_work;
+   w->work.data = w;
+   w->work.caller_owned = true;
+   w->bo = bo;
+
+   simple_mtx_lock(&fence->screen->fence.lock);
+   _nouveau_fence_add_work(fence, &w->work);
+   simple_mtx_unlock(&fence->screen->fence.lock);
+   return true;
+}
+
 bool
 nouveau_fence_work(struct nouveau_fence *fence,
                    void (*func)(void *), void *data)
@@ -336,6 +379,20 @@ nouveau_fence_work(struct nouveau_fence *fence,
       nouveau_fence_kick(fence);
    simple_mtx_unlock(&screen->fence.lock);
    return true;
+}
+
+void
+_nouveau_fence_add_work(struct nouveau_fence *fence,
+                        struct nouveau_fence_work *work)
+{
+   simple_mtx_assert_locked(&fence->screen->fence.lock);
+   assert(work->caller_owned);
+
+   if (fence->state == NOUVEAU_FENCE_STATE_SIGNALLED) {
+      work->func(work->data);
+      return;
+   }
+   list_add(&work->list, &fence->work);
 }
 
 void

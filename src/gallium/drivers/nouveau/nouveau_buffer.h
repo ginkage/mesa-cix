@@ -4,6 +4,7 @@
 #include "util/u_range.h"
 #include "util/u_transfer.h"
 #include "util/list.h"
+#include "util/u_dynarray.h"
 
 struct pipe_resource;
 struct nouveau_context;
@@ -52,8 +53,13 @@ struct nv04_resource {
 
    struct nouveau_fence *fence;
    struct nouveau_fence *fence_wr;
+   /* fences of other contexts that use the sub-allocation and are not
+    * emitted yet */
+   struct util_dynarray fences_unemitted;
 
    struct nouveau_mm_allocation *mm;
+   /* releases the storage, comes with it */
+   struct nouveau_storage_release *release;
 
    /* buffer range that has been initialized */
    struct util_range valid_buffer_range;
@@ -61,6 +67,9 @@ struct nv04_resource {
 
 void
 nouveau_buffer_release_gpu_storage(struct nv04_resource *);
+
+void
+nouveau_buffer_fence(struct nouveau_context *, struct nv04_resource *, bool write);
 
 void
 nouveau_copy_buffer(struct nouveau_context *,

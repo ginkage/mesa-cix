@@ -71,14 +71,13 @@ nvc0_program_sp_start_id(struct nvc0_context *nvc0, int stage,
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
 
-   simple_mtx_assert_locked(&nvc0->screen->state_lock);
-   if (nvc0->screen->eng3d->oclass < GV100_3D_CLASS) {
+   if (nvc0->screen->base.class_3d < GV100_3D_CLASS) {
       BEGIN_NVC0(push, NVC0_3D(SP_START_ID(stage)), 1);
       PUSH_DATA (push, prog->code_base);
    } else {
       BEGIN_NVC0(push, SUBC_3D(GV100_3D_SP_ADDRESS_HIGH(stage)), 2);
-      PUSH_DATAh(push, nvc0->screen->text->offset + prog->code_base);
-      PUSH_DATA (push, nvc0->screen->text->offset + prog->code_base);
+      PUSH_DATAh(push, nvc0->text->offset + prog->code_base);
+      PUSH_DATA (push, nvc0->text->offset + prog->code_base);
    }
 }
 
@@ -299,7 +298,7 @@ nvc0_layer_validate(struct nvc0_context *nvc0)
 
    BEGIN_NVC0(push, NVC0_3D(LAYER), 1);
    PUSH_DATA (push, prog_selects_layer ? NVC0_3D_LAYER_USE_GP : 0);
-   if (nvc0->screen->eng3d->oclass >= GM200_3D_CLASS) {
+   if (nvc0->screen->base.class_3d >= GM200_3D_CLASS) {
       IMMED_NVC0(push, NVC0_3D(LAYER_VIEWPORT_RELATIVE),
                  layer_viewport_relative);
    }
@@ -340,7 +339,6 @@ nvc0_tfb_validate(struct nvc0_context *nvc0)
       }
    }
 
-   simple_mtx_assert_locked(&nvc0->screen->state_lock);
    nvc0->state.tfb = tfb;
 
    if (!(nvc0->dirty_3d & NVC0_NEW_3D_TFB_TARGETS))

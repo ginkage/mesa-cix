@@ -45,11 +45,61 @@ nouveau_buffer_malloc(struct nv04_resource *buf)
    return !!buf->data;
 }
 
+struct nouveau_storage_release {
+   struct nouveau_fence_work work;
+   struct nouveau_bo *bo;
+   struct nouveau_mm_allocation *mm;
+   struct nouveau_fence *fence[2];
+   struct util_dynarray fences;
+};
+
+/* Waits for one unsignalled fence after the other, then releases.  Runs with
+ * the fence lock held and never submits a pushbuf. */
+static void
+nouveau_storage_release_work(void *data)
+{
+   struct nouveau_storage_release *rel = data;
+   struct nouveau_fence *next = NULL;
+
+   for (unsigned i = 0; i < 2; i++) {
+      if (rel->fence[i] && rel->fence[i]->state != NOUVEAU_FENCE_STATE_SIGNALLED)
+         next = rel->fence[i];
+   }
+   util_dynarray_foreach(&rel->fences, struct nouveau_fence *, f) {
+      if ((*f)->state != NOUVEAU_FENCE_STATE_SIGNALLED)
+         next = *f;
+   }
+   if (next) {
+      _nouveau_fence_add_work(next, &rel->work);
+      return;
+   }
+
+   nouveau_bo_ref(NULL, &rel->bo);
+   if (rel->mm)
+      nouveau_mm_free(rel->mm);
+   _nouveau_fence_ref(NULL, &rel->fence[0]);
+   _nouveau_fence_ref(NULL, &rel->fence[1]);
+   util_dynarray_foreach(&rel->fences, struct nouveau_fence *, f)
+      _nouveau_fence_ref(NULL, f);
+   util_dynarray_fini(&rel->fences);
+   FREE(rel);
+}
+
+/* Releasing storage cannot fail, so what it takes comes with the storage. */
 static inline bool
 nouveau_buffer_allocate(struct nouveau_screen *screen,
                         struct nv04_resource *buf, unsigned domain)
 {
    uint32_t size = align(buf->base.width0, 0x100);
+
+   if (domain != 0 && !buf->release) {
+      buf->release = CALLOC_STRUCT(nouveau_storage_release);
+      if (!buf->release)
+         return false;
+      buf->release->work.func = nouveau_storage_release_work;
+      buf->release->work.data = buf->release;
+      buf->release->work.caller_owned = true;
+   }
 
    if (domain == NOUVEAU_BO_VRAM) {
       buf->mm = nouveau_mm_allocate(screen->mm_VRAM, size,
@@ -86,37 +136,136 @@ release_allocation(struct nouveau_mm_allocation **mm,
    (*mm) = NULL;
 }
 
+/* Releases bo and mm through rel once fence, buf->fence and every fence in
+ * buf->fences_unemitted have signalled, and forgets the latter. */
+static void
+release_storage(struct nv04_resource *buf, struct nouveau_storage_release *rel,
+                struct nouveau_fence *fence,
+                struct nouveau_bo *bo, struct nouveau_mm_allocation *mm)
+{
+   struct nouveau_fence_list *fence_list = &nouveau_screen(buf->base.screen)->fence;
+
+   rel->bo = bo;
+   rel->mm = mm;
+   simple_mtx_lock(&fence_list->lock);
+   _nouveau_fence_ref(fence, &rel->fence[0]);
+   _nouveau_fence_ref(buf->fence, &rel->fence[1]);
+   rel->fences = buf->fences_unemitted;
+   util_dynarray_init(&buf->fences_unemitted, NULL);
+   nouveau_storage_release_work(rel);
+   simple_mtx_unlock(&fence_list->lock);
+}
+
+static void
+release_gpu_storage(struct nv04_resource *buf, struct nouveau_storage_release *rel,
+                    struct nouveau_bo *bo, struct nouveau_mm_allocation *mm,
+                    unsigned domain)
+{
+   if (bo)
+      release_storage(buf, rel, buf->fence, bo, mm);
+   else
+      FREE(rel);
+
+   if (domain == NOUVEAU_BO_VRAM)
+      NOUVEAU_DRV_STAT_RES(buf, buf_obj_current_bytes_vid, -(uint64_t)buf->base.width0);
+   if (domain == NOUVEAU_BO_GART)
+      NOUVEAU_DRV_STAT_RES(buf, buf_obj_current_bytes_sys, -(uint64_t)buf->base.width0);
+}
+
 inline void
 nouveau_buffer_release_gpu_storage(struct nv04_resource *buf)
 {
    assert(!(buf->status & NOUVEAU_BUFFER_STATUS_USER_PTR));
 
-   nouveau_fence_work(buf->fence, nouveau_fence_unref_bo, buf->bo);
+   release_gpu_storage(buf, buf->release, buf->bo, buf->mm, buf->domain);
+   buf->release = NULL;
    buf->bo = NULL;
-
-   if (buf->mm)
-      release_allocation(&buf->mm, buf->fence);
-
-   if (buf->domain == NOUVEAU_BO_VRAM)
-      NOUVEAU_DRV_STAT_RES(buf, buf_obj_current_bytes_vid, -(uint64_t)buf->base.width0);
-   if (buf->domain == NOUVEAU_BO_GART)
-      NOUVEAU_DRV_STAT_RES(buf, buf_obj_current_bytes_sys, -(uint64_t)buf->base.width0);
-
+   buf->mm = NULL;
    buf->domain = 0;
 }
 
+/* Another context's fence that is not emitted yet can signal after ours:
+ * keep it until the storage is released.  Ours covers the emitted ones. */
+void
+nouveau_buffer_fence(struct nouveau_context *nv, struct nv04_resource *buf, bool write)
+{
+   struct nouveau_fence_list *fence_list = &nv->screen->fence;
+
+   /* only this thread sets nv->fence, a racing replacer keeps it */
+   if (p_atomic_read_relaxed(&buf->fence) == nv->fence &&
+       (!write || p_atomic_read_relaxed(&buf->fence_wr) == nv->fence))
+      return;
+
+   simple_mtx_lock(&fence_list->lock);
+   if (buf->mm) {
+      struct nouveau_fence **fences = buf->fences_unemitted.data;
+      unsigned n = util_dynarray_num_elements(&buf->fences_unemitted,
+                                              struct nouveau_fence *);
+
+      for (unsigned i = 0; i < n;) {
+         if (fences[i] == nv->fence ||
+             fences[i]->state >= NOUVEAU_FENCE_STATE_EMITTED) {
+            _nouveau_fence_ref(NULL, &fences[i]);
+            fences[i] = fences[--n];
+         } else {
+            i++;
+         }
+      }
+      buf->fences_unemitted.size = n * sizeof(*fences);
+
+      if (buf->fence && buf->fence != nv->fence &&
+          buf->fence->state < NOUVEAU_FENCE_STATE_EMITTED) {
+         struct nouveau_fence **slot =
+            util_dynarray_grow(&buf->fences_unemitted, struct nouveau_fence *, 1);
+
+         /* the reference moves to the array; without memory, the other
+          * context's fence stays, and the next fencing tries again */
+         if (!slot) {
+            if (write)
+               _nouveau_fence_ref(nv->fence, &buf->fence_wr);
+            simple_mtx_unlock(&fence_list->lock);
+            return;
+         }
+         *slot = buf->fence;
+         buf->fence = NULL;
+      }
+   }
+   _nouveau_fence_ref(nv->fence, &buf->fence);
+   if (write)
+      _nouveau_fence_ref(nv->fence, &buf->fence_wr);
+   simple_mtx_unlock(&fence_list->lock);
+}
+
+/* Keeps the old storage if there is no new one. */
 static inline bool
 nouveau_buffer_reallocate(struct nouveau_screen *screen,
                           struct nv04_resource *buf, unsigned domain)
 {
-   nouveau_buffer_release_gpu_storage(buf);
+   struct nouveau_bo *bo = buf->bo;
+   struct nouveau_mm_allocation *mm = buf->mm;
+   struct nouveau_storage_release *rel = buf->release;
+   uint32_t offset = buf->offset;
+   unsigned old_domain = buf->domain;
+
+   buf->bo = NULL;
+   buf->mm = NULL;
+   buf->release = NULL;
+   if (!nouveau_buffer_allocate(screen, buf, domain)) {
+      FREE(buf->release);
+      buf->bo = bo;
+      buf->mm = mm;
+      buf->release = rel;
+      buf->offset = offset;
+      return false;
+   }
+   release_gpu_storage(buf, rel, bo, mm, old_domain);
 
    nouveau_fence_ref(NULL, &buf->fence, screen);
    nouveau_fence_ref(NULL, &buf->fence_wr, screen);
 
    buf->status &= NOUVEAU_BUFFER_STATUS_REALLOC_MASK;
 
-   return nouveau_buffer_allocate(screen, buf, domain);
+   return true;
 }
 
 void
@@ -137,6 +286,7 @@ nouveau_buffer_destroy(struct pipe_screen *pscreen,
 
    nouveau_fence_ref(NULL, &res->fence, nouveau_screen(pscreen));
    nouveau_fence_ref(NULL, &res->fence_wr, nouveau_screen(pscreen));
+   util_dynarray_fini(&res->fences_unemitted);
 
    util_range_destroy(&res->valid_buffer_range);
 
@@ -229,46 +379,91 @@ nouveau_transfer_write(struct nouveau_context *nv, struct nouveau_transfer *tx,
    else
       nv->push_data(nv, buf->bo, buf->offset + base, buf->domain, size, data);
 
-   nouveau_fence_ref(nv->fence, &buf->fence, nv->screen);
-   nouveau_fence_ref(nv->fence, &buf->fence_wr, nv->screen);
+   nouveau_buffer_fence(nv, buf, true);
+}
+
+/* The fence to wait on for f, or NULL.  Never submit another context's
+ * commands.  Instead of a fence another context had not flushed when the map
+ * began (begin is the screen's sequence then), take our next fence: it runs
+ * after all others submitted, and once it has signalled, so has every other
+ * context's fence that is ordered before the map. */
+static inline struct nouveau_fence *
+sync_fence(struct nouveau_context *nv, struct nouveau_fence *f,
+           uint32_t begin, bool own_done)
+{
+   if (!f || _nouveau_fence_signalled(f))
+      return NULL;
+   if (f->context == nv)
+      return f;
+   if (own_done)
+      return NULL;
+   if (f->state < NOUVEAU_FENCE_STATE_FLUSHED ||
+       (int32_t)(f->sequence - begin) > 0)
+      return nv->fence;
+   return f;
 }
 
 /* Does a CPU wait for the buffer's backing data to become reliably accessible
- * for write/read by waiting on the buffer's relevant fences.
+ * for write/read by waiting on the buffer's relevant fences.  A retained
+ * fence can be a write and can signal after the primary one, whichever
+ * context it belongs to: both directions wait on all of them.
  */
 static inline bool
 nouveau_buffer_sync(struct nouveau_context *nv,
                     struct nv04_resource *buf, unsigned rw)
 {
-   if (rw == PIPE_MAP_READ) {
-      if (!buf->fence_wr)
-         return true;
-      NOUVEAU_DRV_STAT_RES(buf, buf_non_kernel_fence_sync_count,
-                           !nouveau_fence_signalled(buf->fence_wr));
-      if (!nouveau_fence_wait(buf->fence_wr, &nv->debug))
-         return false;
-   } else {
-      if (!buf->fence)
-         return true;
-      NOUVEAU_DRV_STAT_RES(buf, buf_non_kernel_fence_sync_count,
-                           !nouveau_fence_signalled(buf->fence));
-      if (!nouveau_fence_wait(buf->fence, &nv->debug))
-         return false;
+   struct nouveau_fence_list *fence_list = &nv->screen->fence;
+   bool own_done = false, ret = true;
 
-      nouveau_fence_ref(NULL, &buf->fence, nv->screen);
+   simple_mtx_lock(&fence_list->lock);
+   const uint32_t begin = fence_list->sequence;
+   while (ret) {
+      struct nouveau_fence *held = NULL, *fence =
+         sync_fence(nv, rw == PIPE_MAP_READ ? buf->fence_wr : buf->fence,
+                    begin, own_done);
+
+      util_dynarray_foreach(&buf->fences_unemitted, struct nouveau_fence *, f) {
+         if (fence)
+            break;
+         fence = sync_fence(nv, *f, begin, own_done);
+      }
+      if (!fence)
+         break;
+
+      own_done |= fence == nv->fence;
+      NOUVEAU_DRV_STAT_RES(buf, buf_non_kernel_fence_sync_count, 1);
+      _nouveau_fence_ref(fence, &held);
+      simple_mtx_unlock(&fence_list->lock);
+      ret = nouveau_fence_wait(held, &nv->debug);
+      simple_mtx_lock(&fence_list->lock);
+      _nouveau_fence_ref(NULL, &held);
    }
-   nouveau_fence_ref(NULL, &buf->fence_wr, nv->screen);
 
-   return true;
+   /* another context may have fenced it meanwhile */
+   if (ret && rw != PIPE_MAP_READ && buf->fence &&
+       _nouveau_fence_signalled(buf->fence))
+      _nouveau_fence_ref(NULL, &buf->fence);
+   if (ret && buf->fence_wr && _nouveau_fence_signalled(buf->fence_wr))
+      _nouveau_fence_ref(NULL, &buf->fence_wr);
+   simple_mtx_unlock(&fence_list->lock);
+
+   return ret;
 }
 
 static inline bool
 nouveau_buffer_busy(struct nv04_resource *buf, unsigned rw)
 {
-   if (rw == PIPE_MAP_READ)
-      return (buf->fence_wr && !nouveau_fence_signalled(buf->fence_wr));
-   else
-      return (buf->fence && !nouveau_fence_signalled(buf->fence));
+   struct nouveau_fence_list *fence_list = &nouveau_screen(buf->base.screen)->fence;
+   struct nouveau_fence *fence;
+   bool busy;
+
+   simple_mtx_lock(&fence_list->lock);
+   fence = rw == PIPE_MAP_READ ? buf->fence_wr : buf->fence;
+   busy = fence && !_nouveau_fence_signalled(fence);
+   util_dynarray_foreach(&buf->fences_unemitted, struct nouveau_fence *, f)
+      busy = busy || !_nouveau_fence_signalled(*f);
+   simple_mtx_unlock(&fence_list->lock);
+   return busy;
 }
 
 static inline void
@@ -459,7 +654,10 @@ nouveau_buffer_transfer_map(struct pipe_context *pipe,
 
    if (nouveau_buffer_should_discard(buf, usage)) {
       int ref = buf->base.reference.count - 1;
-      nouveau_buffer_reallocate(nv->screen, buf, buf->domain);
+      if (!nouveau_buffer_reallocate(nv->screen, buf, buf->domain)) {
+         FREE(tx);
+         return NULL;
+      }
       if (ref > 0) /* any references inside context possible ? */
          nv->invalidate_resource_storage(nv, &buf->base, ref);
    }
@@ -586,11 +784,10 @@ nouveau_copy_buffer(struct nouveau_context *nv,
                     src->bo, src->offset + srcx, src->domain, size);
 
       dst->status |= NOUVEAU_BUFFER_STATUS_GPU_WRITING;
-      nouveau_fence_ref(nv->fence, &dst->fence, nv->screen);
-      nouveau_fence_ref(nv->fence, &dst->fence_wr, nv->screen);
+      nouveau_buffer_fence(nv, dst, true);
 
       src->status |= NOUVEAU_BUFFER_STATUS_GPU_READING;
-      nouveau_fence_ref(nv->fence, &src->fence, nv->screen);
+      nouveau_buffer_fence(nv, src, false);
    } else {
       struct pipe_box src_box;
       src_box.x = srcx;
@@ -723,6 +920,7 @@ nouveau_buffer_create(struct pipe_screen *pscreen,
    return &buffer->base;
 
 fail:
+   FREE(buffer->release);
    FREE(buffer);
    return NULL;
 }
@@ -820,6 +1018,7 @@ nouveau_buffer_migrate(struct nouveau_context *nv,
    } else
    if (old_domain != 0 && new_domain != 0) {
       struct nouveau_mm_allocation *mm = buf->mm;
+      struct nouveau_storage_release *rel;
 
       if (new_domain == NOUVEAU_BO_VRAM) {
          /* keep a system memory copy of our data in case we hit a fallback */
@@ -831,16 +1030,23 @@ nouveau_buffer_migrate(struct nouveau_context *nv,
 
       offset = buf->offset;
       bo = buf->bo;
+      rel = buf->release;
       buf->bo = NULL;
       buf->mm = NULL;
-      nouveau_buffer_allocate(screen, buf, new_domain);
+      buf->release = NULL;
+      if (!nouveau_buffer_allocate(screen, buf, new_domain)) {
+         FREE(buf->release);
+         buf->bo = bo;
+         buf->mm = mm;
+         buf->offset = offset;
+         buf->release = rel;
+         return false;
+      }
 
       nv->copy_data(nv, buf->bo, buf->offset, new_domain,
                     bo, offset, old_domain, buf->base.width0);
 
-      nouveau_fence_work(nv->fence, nouveau_fence_unref_bo, bo);
-      if (mm)
-         release_allocation(&mm, nv->fence);
+      release_storage(buf, rel, nv->fence, bo, mm);
    } else
    if (new_domain == NOUVEAU_BO_VRAM && old_domain == 0) {
       struct nouveau_transfer tx;

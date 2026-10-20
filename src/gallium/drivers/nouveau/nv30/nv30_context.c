@@ -207,7 +207,7 @@ nv30_context_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    pipe->destroy = nv30_context_destroy;
    pipe->flush = nv30_context_flush;
 
-   if (nouveau_context_init(&nv30->base, &screen->base)) {
+   if (nouveau_context_init(&nv30->base, &screen->base, screen->base.channel)) {
       nv30_context_destroy(pipe);
       return NULL;
    }

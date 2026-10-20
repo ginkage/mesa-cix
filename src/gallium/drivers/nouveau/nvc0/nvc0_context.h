@@ -169,6 +169,8 @@ void nvc0_blitctx_destroy(struct nvc0_context *);
 struct nvc0_resident {
    struct list_head list;
    uint64_t handle;
+   unsigned index; /* in nvc0_screen::bindless, which bindless holds a reference to */
+   struct nvc0_bindless *bindless;
    struct nv04_resource *buf;
    uint32_t flags;
 };
@@ -181,6 +183,44 @@ struct nvc0_context {
    struct nouveau_bufctx *bufctx_cp;
 
    struct nvc0_screen *screen;
+
+   /* the context's own channel, and everything its commands address */
+   struct nouveau_object *chan;
+   struct nouveau_object *eng3d; /* sqrt(1/2)|kepler> + sqrt(1/2)|fermi> */
+   struct nouveau_object *eng2d;
+   struct nouveau_object *m2mf;
+   struct nouveau_object *copy;
+   struct nouveau_object *compute;
+   struct nouveau_object *nvsw;
+
+   struct nouveau_bo *text;
+   struct nouveau_bo *uniform_bo;
+   struct nouveau_bo *txc; /* TIC (offset 0) and TSC (65536) */
+
+   struct nouveau_heap *text_heap;
+   struct nouveau_heap *lib_code; /* allocated from text_heap */
+
+   struct {
+      void **entries;
+      int next;
+      uint32_t lock[NVC0_TIC_MAX_ENTRIES / 32];
+   } tic;
+
+   struct {
+      void **entries;
+      int next;
+      uint32_t lock[NVC0_TSC_MAX_ENTRIES / 32];
+   } tsc;
+
+   /* only maintained on Maxwell+ */
+   struct nvc0_cb_binding cb_bindings[5][NVC0_MAX_CONST_BUFFERS];
+
+   int num_occlusion_queries_active;
+
+   struct nvc0_blitter *blitter;
+   struct nvc0_program *pm_prog; /* compute state object to read MP counters */
+
+   unsigned storage_seq; /* nvc0_screen::storage_seq last seen */
 
    void (*m2mf_copy_rect)(struct nvc0_context *,
                           const struct nv50_m2mf_rect *dst,
@@ -295,6 +335,40 @@ nvc0_context(struct pipe_context *pipe)
    return (struct nvc0_context *)pipe;
 }
 
+static inline void
+nvc0_screen_tic_unlock(struct nvc0_context *nvc0, struct nv50_tic_entry *tic)
+{
+   if (tic->bindless)
+      return;
+   if (tic->id >= 0)
+      nvc0->tic.lock[tic->id / 32] &= ~(1 << (tic->id % 32));
+}
+
+static inline void
+nvc0_screen_tsc_unlock(struct nvc0_context *nvc0, struct nv50_tsc_entry *tsc)
+{
+   if (tsc->id >= 0)
+      nvc0->tsc.lock[tsc->id / 32] &= ~(1 << (tsc->id % 32));
+}
+
+static inline void
+nvc0_screen_tic_free(struct nvc0_context *nvc0, struct nv50_tic_entry *tic)
+{
+   if (tic->id >= 0) {
+      nvc0->tic.entries[tic->id] = NULL;
+      nvc0->tic.lock[tic->id / 32] &= ~(1 << (tic->id % 32));
+   }
+}
+
+static inline void
+nvc0_screen_tsc_free(struct nvc0_context *nvc0, struct nv50_tsc_entry *tsc)
+{
+   if (tsc->id >= 0) {
+      nvc0->tsc.entries[tsc->id] = NULL;
+      nvc0->tsc.lock[tsc->id / 32] &= ~(1 << (tsc->id % 32));
+   }
+}
+
 static inline unsigned
 nvc0_shader_stage(unsigned pipe)
 {
@@ -314,11 +388,8 @@ nvc0_shader_stage(unsigned pipe)
 static inline void
 nvc0_resource_fence(struct nvc0_context *nvc0, struct nv04_resource *res, uint32_t flags)
 {
-   if (res->mm) {
-      nouveau_fence_ref(nvc0->base.fence, &res->fence, nvc0->base.screen);
-      if (flags & NOUVEAU_BO_WR)
-         nouveau_fence_ref(nvc0->base.fence, &res->fence_wr, nvc0->base.screen);
-   }
+   if (res->mm)
+      nouveau_buffer_fence(&nvc0->base, res, flags & NOUVEAU_BO_WR);
 }
 
 static inline void
@@ -378,7 +449,6 @@ struct nvc0_state_validate {
 bool nvc0_state_validate(struct nvc0_context *, uint32_t,
                          struct nvc0_state_validate *, int, uint32_t *,
                          struct nouveau_bufctx *);
-void nvc0_switch_pipe_context(struct nvc0_context *);
 bool nvc0_state_validate_3d(struct nvc0_context *, uint32_t);
 
 /* nvc0_surface.c */
@@ -399,7 +469,6 @@ void nvc0_validate_samplers(struct nvc0_context *);
 void nvc0_upload_tsc0(struct nvc0_context *);
 void nve4_set_tex_handles(struct nvc0_context *);
 void nvc0_validate_surfaces(struct nvc0_context *);
-void nve4_update_image_handles(struct nvc0_context *, struct pipe_resource *);
 void nve4_set_surface_info(struct nouveau_pushbuf *,
                            const struct pipe_image_view *,
                            struct nvc0_context *);
@@ -421,6 +490,7 @@ gm107_create_texture_view_from_image(struct pipe_context *,
                                      const struct pipe_image_view *);
 
 void nvc0_init_bindless_functions(struct pipe_context *);
+void nvc0_bindless_upload(struct nvc0_context *, unsigned, struct nvc0_bindless *);
 
 /* nvc0_transfer.c */
 void
