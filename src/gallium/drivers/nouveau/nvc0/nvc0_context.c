@@ -438,7 +438,7 @@ nvc0_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
    if (nouveau_pushbuf_order(nvc0->base.pushbuf))
       goto out_err;
    nvc0->base.kick_notify = nvc0_default_kick_notify;
-   nvc0->base.pushbuf->rsvd_kick = 5;
+   nvc0->base.pushbuf->rsvd_kick = 10;
 
    ret = nouveau_bufctx_new(nvc0->base.client, 2, &nvc0->bufctx);
    if (!ret)

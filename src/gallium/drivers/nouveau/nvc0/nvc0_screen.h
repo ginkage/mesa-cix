@@ -99,6 +99,7 @@ struct nvc0_screen {
    struct {
       struct nouveau_bo *bo;
       uint32_t *map;
+      bool l2_flush; /* the GPU L2 caches system memory (GM20B) */
    } fence;
 
    struct {

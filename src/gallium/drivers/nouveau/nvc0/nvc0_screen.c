@@ -611,7 +611,15 @@ nvc0_screen_fence_emit(struct pipe_context *pcontext, u32 *sequence,
    /* we need to do it after possible flush in MARK_RING */
    *sequence = ++screen->base.fence.sequence;
 
-   assert(PUSH_AVAIL(push) + push->rsvd_kick >= 5);
+   assert(PUSH_AVAIL(push) + push->rsvd_kick >= 10);
+   if (screen->fence.l2_flush) {
+      /* host SET_REFERENCE (wait for idle), MEM_OP_C/D L2_FLUSH_DIRTY */
+      PUSH_DATA (push, NVC0_FIFO_PKHDR_SQ(0, 0x0050, 1));
+      PUSH_DATA (push, 0);
+      PUSH_DATA (push, NVC0_FIFO_PKHDR_SQ(0, 0x0030, 2));
+      PUSH_DATA (push, 0);
+      PUSH_DATA (push, 0x10 << 27);
+   }
    PUSH_DATA (push, NVC0_FIFO_PKHDR_SQ(NVC0_3D(QUERY_ADDRESS_HIGH), 4));
    PUSH_DATAh(push, screen->fence.bo->offset);
    PUSH_DATA (push, screen->fence.bo->offset);
@@ -834,6 +842,7 @@ nvc0_screen_create(struct nouveau_device *dev)
       FAIL_SCREEN_INIT("Error allocating fence BO: %d\n", ret);
    BO_MAP(&screen->base, screen->fence.bo, 0, NULL);
    screen->fence.map = screen->fence.bo->map;
+   screen->fence.l2_flush = dev->chipset == 0x12b && dev->info.type == NV_DEVICE_TYPE_SOC;
    screen->base.fence.emit = nvc0_screen_fence_emit;
    screen->base.fence.update = nvc0_screen_fence_update;
 
