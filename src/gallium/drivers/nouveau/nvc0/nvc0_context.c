@@ -190,10 +190,12 @@ nvc0_emit_string_marker(struct pipe_context *pipe, const char *str, int len)
    }
 }
 
+/* a rejected submit discards the context's work, see nouveau_pushbuf_error() */
 static enum pipe_reset_status
 nvc0_get_device_reset_status(struct pipe_context *pipe)
 {
-   return PIPE_NO_RESET;
+   return nouveau_pushbuf_error(nvc0_context(pipe)->base.pushbuf) ?
+          PIPE_GUILTY_CONTEXT_RESET : PIPE_NO_RESET;
 }
 
 static void

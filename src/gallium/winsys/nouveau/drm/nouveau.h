@@ -187,6 +187,7 @@ int nouveau_bo_prime_handle_ref(struct nouveau_device *, int prime_fd, struct no
 void nouveau_bo_ref(struct nouveau_bo *, struct nouveau_bo **);
 int nouveau_bo_set_prime(struct nouveau_bo *, int *prime_fd);
 int nouveau_bo_wait(struct nouveau_bo *, uint32_t access, struct nouveau_client *);
+bool nouveau_bo_is_lost(struct nouveau_bo *);
 int nouveau_bo_wrap(struct nouveau_device *, uint32_t handle, struct nouveau_bo **);
 
 int nouveau_bufctx_new(struct nouveau_client *, int bins, struct nouveau_bufctx **);
@@ -207,6 +208,7 @@ void nouveau_pushbuf_data(struct nouveau_pushbuf *, struct nouveau_bo *, uint64_
                           uint64_t length);
 int nouveau_pushbuf_order(struct nouveau_pushbuf *);
 int nouveau_pushbuf_kick(struct nouveau_pushbuf *);
+int nouveau_pushbuf_error(struct nouveau_pushbuf *);
 int nouveau_pushbuf_refn(struct nouveau_pushbuf *, struct nouveau_pushbuf_refn *, int nr);
 void nouveau_pushbuf_reloc(struct nouveau_pushbuf *, struct nouveau_bo *, uint32_t data,
                            uint32_t flags, uint32_t vor, uint32_t tor);

@@ -93,10 +93,14 @@ nouveau_screen_fence_finish(struct pipe_screen *screen,
                             struct pipe_fence_handle *pfence,
                             uint64_t timeout)
 {
-   if (!timeout)
-      return nouveau_fence_signalled(nouveau_fence(pfence));
+   struct nouveau_fence *fence = nouveau_fence(pfence);
 
-   return nouveau_fence_wait(nouveau_fence(pfence), NULL);
+   /* The fence of discarded work retires too, so that no one waits for it
+    * forever: the context reports the loss, see get_device_reset_status. */
+   if (!timeout)
+      return nouveau_fence_signalled(fence) || fence->lost;
+
+   return nouveau_fence_wait(fence, NULL) || fence->lost;
 }
 
 

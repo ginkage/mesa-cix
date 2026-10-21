@@ -584,6 +584,8 @@ struct nouveau_bo_priv {
    uint32_t alloc_flags;
    uint32_t alloc_align;
    bool cacheable;
+   /* written by a pushbuf the kernel rejected: undefined until written again */
+   bool lost;
 };
 
 static inline struct nouveau_bo_priv *
@@ -722,6 +724,7 @@ nouveau_bo_cache_get(struct nouveau_device_priv *nvdev, uint32_t flags,
     * nouveau_bo_wait() on the recycled object */
    p_atomic_set(&nouveau_bo(bo)->refcnt, 1);
    nouveau_bo(bo)->access = NOUVEAU_BO_WR;
+   nouveau_bo(bo)->lost = false;
 
    *pbo = bo;
    return true;
@@ -1036,6 +1039,12 @@ cli_kref_set(struct nouveau_client *client, struct nouveau_bo *bo,
    return 0;
 }
 
+bool
+nouveau_bo_is_lost(struct nouveau_bo *bo)
+{
+   return nouveau_bo(bo)->lost;
+}
+
 int
 nouveau_bo_wait(struct nouveau_bo *bo, uint32_t access, struct nouveau_client *client)
 {
@@ -1049,8 +1058,13 @@ nouveau_bo_wait(struct nouveau_bo *bo, uint32_t access, struct nouveau_client *c
       return 0;
 
    push = cli_push_get(client, bo);
-   if (push)
-      nouveau_pushbuf_kick(push);
+   if (push) {
+      ret = nouveau_pushbuf_kick(push);
+      if (ret)
+         return ret;
+   }
+   if (nvbo->lost)
+      return -EIO;
 
    if (!nvbo->head.next && !(nvbo->access & NOUVEAU_BO_WR) && !(access & NOUVEAU_BO_WR))
       return 0;
@@ -1211,6 +1225,7 @@ struct nouveau_pushbuf_priv {
    int bo_next;
    int bo_nr;
    bool ordered;
+   int error; /* of the first rejected submit: every later one fails too */
    struct nouveau_bo *bos[];
 };
 
@@ -1300,7 +1315,8 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
 
    nouveau_pushbuf_data(push, NULL, 0, 0);
 
-   while (krec && krec->nr_push) {
+   ret = nvpb->error;
+   while (!ret && krec && krec->nr_push) {
       req.channel = channel;
       req.nr_buffers = krec->nr_buffer;
       req.buffers = (uint64_t)(unsigned long)krec->buffer;
@@ -1343,6 +1359,7 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
       if (ret) {
          err("kernel rejected pushbuf: %s\n", strerror(-ret));
          pushbuf_dump(dev, krec, krec_id++, channel);
+         nvpb->error = ret;
          break;
       }
 
@@ -1360,13 +1377,23 @@ pushbuf_submit(struct nouveau_pushbuf *push, struct nouveau_object *chan)
             bo->offset = info->offset;
          }
 
-         if (kref->write_domains)
+         if (kref->write_domains) {
             nouveau_bo(bo)->access |= NOUVEAU_BO_WR;
+            nouveau_bo(bo)->lost = false;
+         }
          if (kref->read_domains)
             nouveau_bo(bo)->access |= NOUVEAU_BO_RD;
       }
 
       krec = krec->next;
+   }
+
+   /* the work of the rejected and every later krec is discarded */
+   for (; ret && krec && krec->nr_push; krec = krec->next) {
+      for (i = 0; i < krec->nr_buffer; i++) {
+         if (krec->buffer[i].write_domains)
+            nouveau_bo((void *)(uintptr_t)krec->buffer[i].user_priv)->lost = true;
+      }
    }
 
    return ret;
@@ -1389,9 +1416,9 @@ pushbuf_flush(struct nouveau_pushbuf *push)
    kref = krec->buffer;
    for (i = 0; i < krec->nr_buffer; i++, kref++) {
       struct nouveau_bo *bo = (void *)(unsigned long)kref->user_priv;
-      ret = cli_kref_set(push->client, bo, NULL, NULL);
-      if (ret)
-         return ret;
+      int err = cli_kref_set(push->client, bo, NULL, NULL);
+      if (err)
+         return ret ? ret : err;
       nouveau_bo_ref(NULL, &bo);
    }
 
@@ -1865,8 +1892,15 @@ nouveau_pushbuf_order(struct nouveau_pushbuf *push)
 int
 nouveau_pushbuf_kick(struct nouveau_pushbuf *push)
 {
-   pushbuf_flush(push);
-   return pushbuf_validate(push, false);
+   int ret = pushbuf_flush(push);
+   int err = pushbuf_validate(push, false);
+   return ret ? ret : err;
+}
+
+int
+nouveau_pushbuf_error(struct nouveau_pushbuf *push)
+{
+   return nouveau_pushbuf(push)->error;
 }
 
 int

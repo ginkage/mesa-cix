@@ -169,21 +169,21 @@ _nouveau_fence_update(struct nouveau_screen *screen, bool flushed)
    if (unlikely(screen->disable_fences))
       sequence = screen->fence.sequence;
 
-   if (fence_list->sequence_ack == sequence)
-      return;
-   fence_list->sequence_ack = sequence;
+   next = fence_list->head;
+   while ((fence = next)) {
+      /* the fence of discarded work retires as lost, whatever the sequence */
+      fence->lost = nouveau_bo_is_lost(fence->bo);
+      if (!fence->lost && fence_list->sequence_ack == sequence)
+         break;
 
-   for (fence = fence_list->head; fence; fence = next) {
       next = fence->next;
-      sequence = fence->sequence;
+      if (!fence->lost)
+         fence_list->sequence_ack = fence->sequence;
 
       fence->state = NOUVEAU_FENCE_STATE_SIGNALLED;
 
       nouveau_fence_trigger_work(fence);
       _nouveau_fence_ref(NULL, &fence);
-
-      if (sequence == fence_list->sequence_ack)
-         break;
    }
    fence_list->head = next;
    if (!next)
@@ -205,13 +205,12 @@ _nouveau_fence_signalled(struct nouveau_fence *fence)
 
    simple_mtx_assert_locked(&screen->fence.lock);
 
-   if (fence->state == NOUVEAU_FENCE_STATE_SIGNALLED)
-      return true;
-
-   if (fence->state >= NOUVEAU_FENCE_STATE_EMITTED)
+   if (fence->state < NOUVEAU_FENCE_STATE_SIGNALLED &&
+       fence->state >= NOUVEAU_FENCE_STATE_EMITTED)
       _nouveau_fence_update(screen, false);
 
-   return fence->state == NOUVEAU_FENCE_STATE_SIGNALLED;
+   /* the work of a lost fence never ran: not signalled, though retired */
+   return fence->state == NOUVEAU_FENCE_STATE_SIGNALLED && !fence->lost;
 }
 
 static bool
@@ -263,6 +262,7 @@ _nouveau_fence_wait(struct nouveau_fence *fence, struct util_debug_callback *deb
    if (!nouveau_fence_kick(fence))
       return false;
 
+   /* signalled, or retired with its discarded work */
    if (fence->state < NOUVEAU_FENCE_STATE_SIGNALLED) {
       NOUVEAU_DRV_STAT(screen, any_non_kernel_fence_sync_count, 1);
       int ret = nouveau_bo_wait(fence->bo, NOUVEAU_BO_RDWR, screen->client);
@@ -283,7 +283,7 @@ _nouveau_fence_wait(struct nouveau_fence *fence, struct util_debug_callback *deb
                             (os_time_get_nano() - start) / 1000000.f);
    }
 
-   return true;
+   return !fence->lost;
 }
 
 bool

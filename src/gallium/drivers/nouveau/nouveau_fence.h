@@ -29,6 +29,7 @@ struct nouveau_fence {
    int state;
    int ref;
    uint32_t sequence;
+   bool lost; /* its pushbuf was rejected, so it never signals */
    uint32_t work_count;
    struct list_head work;
 };
