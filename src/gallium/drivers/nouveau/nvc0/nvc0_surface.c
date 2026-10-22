@@ -1712,6 +1712,8 @@ nvc0_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
    if (info->src.resource->nr_samples == 8 &&
        info->dst.resource->nr_samples <= 1)
       eng3d = true;
+   if (info->dst.resource->nr_samples > MAX2(info->src.resource->nr_samples, 1))
+      eng3d = true;
 #if 0
    /* FIXME: can't make this work with eng2d anymore, at least not on nv50 */
    if (info->src.resource->nr_samples > 1 ||
