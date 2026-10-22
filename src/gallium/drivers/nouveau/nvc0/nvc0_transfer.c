@@ -9,6 +9,8 @@ struct nvc0_transfer {
    uint32_t nblocksx;
    uint16_t nblocksy;
    uint16_t nlayers;
+   struct pipe_resource *ss;
+   struct pipe_transfer *ss_transfer;
 };
 
 static void
@@ -369,6 +371,88 @@ nvc0_mt_sync(struct nvc0_context *nvc0, struct nv50_miptree *mt, unsigned usage)
    return !mt->base.fence_wr || nouveau_fence_wait(mt->base.fence_wr, &nvc0->base.debug);
 }
 
+static void
+nvc0_msaa_transfer_blit(struct pipe_context *pctx,
+                        struct pipe_resource *dst, unsigned dst_level,
+                        const struct pipe_box *dst_box,
+                        struct pipe_resource *src, unsigned src_level,
+                        const struct pipe_box *src_box)
+{
+   struct pipe_blit_info blit = {
+      .dst.resource = dst,
+      .dst.format = dst->format,
+      .dst.level = dst_level,
+      .dst.box = *dst_box,
+      .src.resource = src,
+      .src.format = src->format,
+      .src.level = src_level,
+      .src.box = *src_box,
+      .mask = util_format_get_mask(src->format),
+      .filter = PIPE_TEX_FILTER_NEAREST,
+   };
+
+   pctx->blit(pctx, &blit);
+}
+
+/* Map a single-sampled copy: resolved for reads, blitted back for writes. */
+static void *
+nvc0_miptree_transfer_map_msaa(struct pipe_context *pctx,
+                               struct pipe_resource *res,
+                               unsigned level,
+                               unsigned usage,
+                               const struct pipe_box *box,
+                               struct pipe_transfer **ptransfer)
+{
+   struct nvc0_transfer *tx;
+   struct pipe_box ss_box = { .width = box->width, .height = box->height,
+                              .depth = box->depth };
+   struct pipe_resource tmpl = {
+      .target = res->target,
+      .format = res->format,
+      .width0 = box->width,
+      .height0 = box->height,
+      .depth0 = 1,
+      .array_size = box->depth,
+      .usage = PIPE_USAGE_STAGING,
+      .bind = util_format_is_depth_or_stencil(res->format) ?
+              PIPE_BIND_DEPTH_STENCIL : PIPE_BIND_RENDER_TARGET,
+   };
+   void *map;
+
+   if (usage & PIPE_MAP_DIRECTLY)
+      return NULL;
+
+   tx = CALLOC_STRUCT(nvc0_transfer);
+   if (!tx)
+      return NULL;
+
+   tx->ss = pctx->screen->resource_create(pctx->screen, &tmpl);
+   if (!tx->ss) {
+      FREE(tx);
+      return NULL;
+   }
+
+   if (usage & PIPE_MAP_READ)
+      nvc0_msaa_transfer_blit(pctx, tx->ss, 0, &ss_box, res, level, box);
+
+   map = pctx->texture_map(pctx, tx->ss, 0, usage, &ss_box, &tx->ss_transfer);
+   if (!map) {
+      pipe_resource_reference(&tx->ss, NULL);
+      FREE(tx);
+      return NULL;
+   }
+
+   pipe_resource_reference(&tx->base.resource, res);
+   tx->base.level = level;
+   tx->base.usage = usage;
+   tx->base.box = *box;
+   tx->base.stride = tx->ss_transfer->stride;
+   tx->base.layer_stride = tx->ss_transfer->layer_stride;
+
+   *ptransfer = &tx->base;
+   return map;
+}
+
 void *
 nvc0_miptree_transfer_map(struct pipe_context *pctx,
                           struct pipe_resource *res,
@@ -384,6 +468,10 @@ nvc0_miptree_transfer_map(struct pipe_context *pctx,
    uint32_t size;
    int ret;
    unsigned flags = 0;
+
+   if (res->nr_samples > 1)
+      return nvc0_miptree_transfer_map_msaa(pctx, res, level, usage, box,
+                                            ptransfer);
 
    if (nvc0_mt_transfer_can_map_directly(mt)) {
       ret = !nvc0_mt_sync(nvc0, mt, usage);
@@ -533,6 +621,18 @@ nvc0_miptree_transfer_flush_region(struct pipe_context *pctx,
 {
    struct nvc0_transfer *tx = (struct nvc0_transfer *)transfer;
 
+   if (tx->ss) {
+      struct pipe_box dst_box = *box;
+
+      dst_box.x += tx->base.box.x;
+      dst_box.y += tx->base.box.y;
+      dst_box.z += tx->base.box.z;
+      pctx->transfer_flush_region(pctx, tx->ss_transfer, box);
+      nvc0_msaa_transfer_blit(pctx, tx->base.resource, tx->base.level,
+                              &dst_box, tx->ss, 0, box);
+      return;
+   }
+
    if (!(tx->base.usage & PIPE_MAP_DIRECTLY))
       nvc0_miptree_transfer_write(nvc0_context(pctx), tx, box);
 }
@@ -543,6 +643,22 @@ nvc0_miptree_transfer_unmap(struct pipe_context *pctx,
 {
    struct nvc0_context *nvc0 = nvc0_context(pctx);
    struct nvc0_transfer *tx = (struct nvc0_transfer *)transfer;
+
+   if (tx->ss) {
+      struct pipe_box ss_box = { .width = tx->base.box.width,
+                                 .height = tx->base.box.height,
+                                 .depth = tx->base.box.depth };
+
+      pctx->texture_unmap(pctx, tx->ss_transfer);
+      if ((tx->base.usage & PIPE_MAP_WRITE) &&
+          !(tx->base.usage & PIPE_MAP_FLUSH_EXPLICIT))
+         nvc0_msaa_transfer_blit(pctx, tx->base.resource, tx->base.level,
+                                 &tx->base.box, tx->ss, 0, &ss_box);
+      pipe_resource_reference(&tx->ss, NULL);
+      pipe_resource_reference(&transfer->resource, NULL);
+      FREE(tx);
+      return;
+   }
 
    if (tx->base.usage & PIPE_MAP_DIRECTLY) {
       pipe_resource_reference(&transfer->resource, NULL);
