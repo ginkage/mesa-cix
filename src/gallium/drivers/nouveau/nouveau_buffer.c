@@ -1248,13 +1248,18 @@ nouveau_scratch_data(struct nouveau_context *nv,
                      struct nouveau_bo **bo)
 {
    unsigned bgn = MAX2(base, nv->scratch.offset);
-   unsigned end = bgn + size;
+   unsigned end;
 
-   if (end >= nv->scratch.end) {
+   *bo = NULL;
+   if (bgn >= nv->scratch.end || size >= nv->scratch.end - bgn) {
+      if (base > UINT_MAX - 3 || size > UINT_MAX - 3 - base)
+         return 0;
       end = base + size;
       if (!nouveau_scratch_more(nv, end))
          return 0;
       bgn = base;
+   } else {
+      end = bgn + size;
    }
    nv->scratch.offset = align(end, 4);
 
@@ -1269,13 +1274,17 @@ nouveau_scratch_get(struct nouveau_context *nv,
                     unsigned size, uint64_t *gpu_addr, struct nouveau_bo **pbo)
 {
    unsigned bgn = nv->scratch.offset;
-   unsigned end = nv->scratch.offset + size;
+   unsigned end;
 
-   if (end >= nv->scratch.end) {
+   if (bgn >= nv->scratch.end || size >= nv->scratch.end - bgn) {
+      if (size > UINT_MAX - 3)
+         return NULL;
       end = size;
       if (!nouveau_scratch_more(nv, end))
          return NULL;
       bgn = 0;
+   } else {
+      end = bgn + size;
    }
    nv->scratch.offset = align(end, 4);
 
