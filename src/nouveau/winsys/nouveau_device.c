@@ -561,12 +561,6 @@ nouveau_ws_device_new(drmDevicePtr drm_device)
        !nouveau_ws_param(fd, NOUVEAU_GETPARAM_VRAM_BAR_SIZE, &value))
       device->info.bar_size_B = value;
 
-   if (nouveau_ws_param(fd, NOUVEAU_GETPARAM_GRAPH_UNITS, &value))
-      goto out_err;
-
-   device->info.gpc_count = (value >> 0) & 0x000000ff;
-   device->info.tpc_count = (value >> 8) & 0x0000ffff;
-
    struct nouveau_ws_context *tmp_ctx;
    if (nouveau_ws_context_create(device, NOUVEAU_WS_ALL_3D_ENGINES, &tmp_ctx))
       goto out_err;
@@ -579,6 +573,13 @@ nouveau_ws_device_new(drmDevicePtr drm_device)
    device->info.cls_compute = tmp_ctx->compute.cls;
 
    nouveau_ws_context_destroy(tmp_ctx);
+
+   /* Older kernels count the units only once PGRAPH has an object. */
+   if (nouveau_ws_param(fd, NOUVEAU_GETPARAM_GRAPH_UNITS, &value))
+      goto out_err;
+
+   device->info.gpc_count = (value >> 0) & 0x000000ff;
+   device->info.tpc_count = (value >> 8) & 0x0000ffff;
 
    if (!nouveau_ws_context_create(device, NOUVEAU_WS_ENGINE_VDEC, &tmp_ctx)) {
       device->info.cls_vdec = tmp_ctx->vdec.cls;
