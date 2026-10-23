@@ -103,6 +103,16 @@ nvk_is_conformant(const struct nv_device_info *info)
 }
 
 static bool
+nvk_is_supported(const struct nv_device_info *info)
+{
+   /* Tegra X1 (GM20B) is tested, not conformant */
+   if (info->type == NV_DEVICE_TYPE_SOC && info->cls_eng3d == MAXWELL_B)
+      return true;
+
+   return nvk_is_conformant(info);
+}
+
+static bool
 nvk_has_astc(const struct nv_device_info *info)
 {
    /* ASTC only exists on Tegra TK1 and later */
@@ -1601,7 +1611,7 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
       goto fail_nvkmd;
    }
 
-   if (!nvk_is_conformant(&nvkmd->dev_info) &&
+   if (!nvk_is_supported(&nvkmd->dev_info) &&
        !debug_get_bool_option("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", false)) {
 #ifdef NDEBUG
       result = VK_ERROR_INCOMPATIBLE_DRIVER;
