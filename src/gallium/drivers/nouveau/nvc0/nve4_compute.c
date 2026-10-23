@@ -219,7 +219,8 @@ gm107_compute_validate_surfaces(struct nvc0_context *nvc0,
    nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
    res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
-   res->status |=  NOUVEAU_BUFFER_STATUS_GPU_READING;
+   res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |
+                  NOUVEAU_BUFFER_STATUS_SAMPLED;
 
    BCTX_REFN(nvc0->bufctx_cp, CP_SUF, res, RD);
 
@@ -952,7 +953,8 @@ nve4_compute_validate_textures(struct nvc0_context *nvc0)
       nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
       res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
-      res->status |=  NOUVEAU_BUFFER_STATUS_GPU_READING;
+      res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |
+                     NOUVEAU_BUFFER_STATUS_SAMPLED;
 
       nvc0->tex_handles[s][i] &= ~NVE4_TIC_ENTRY_INVALID;
       nvc0->tex_handles[s][i] |= tic->id;

@@ -12,6 +12,9 @@ struct nouveau_bo;
 /* DIRTY: buffer was (or will be after the next flush) written to by GPU and
  *  resource->data has not been updated to reflect modified VRAM contents
  *
+ * SAMPLED: buffer has been bound as a texture or image, so its contents may
+ *  sit in the texture cache
+ *
  * USER_MEMORY: resource->data is a pointer to client memory and may change
  *  between GL calls
  *
@@ -20,10 +23,12 @@ struct nouveau_bo;
 #define NOUVEAU_BUFFER_STATUS_GPU_READING (1 << 0)
 #define NOUVEAU_BUFFER_STATUS_GPU_WRITING (1 << 1)
 #define NOUVEAU_BUFFER_STATUS_DIRTY       (1 << 2)
+#define NOUVEAU_BUFFER_STATUS_SAMPLED     (1 << 3)
 #define NOUVEAU_BUFFER_STATUS_USER_PTR    (1 << 6)
 #define NOUVEAU_BUFFER_STATUS_USER_MEMORY (1 << 7)
 
-#define NOUVEAU_BUFFER_STATUS_REALLOC_MASK NOUVEAU_BUFFER_STATUS_USER_MEMORY
+#define NOUVEAU_BUFFER_STATUS_REALLOC_MASK (NOUVEAU_BUFFER_STATUS_SAMPLED | \
+                                            NOUVEAU_BUFFER_STATUS_USER_MEMORY)
 
 /* Resources, if mapped into the GPU's address space, are guaranteed to
  * have constant virtual addresses (nv50+).

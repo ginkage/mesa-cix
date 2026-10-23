@@ -391,6 +391,7 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    struct nvc0_screen *screen = nvc0->screen;
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_program *cp = nvc0->compprog;
+   uint32_t tex_cache_seq;
    int ret;
 
    simple_mtx_lock(&screen->state_lock);
@@ -402,6 +403,13 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    }
 
    nvc0_compute_upload_input(nvc0, info);
+
+   tex_cache_seq = p_atomic_read(&screen->base.tex_cache_seq);
+   if (nvc0->tex_cache_seq_cp != tex_cache_seq) {
+      PUSH_SPACE(push, 1);
+      IMMED_NVC0(push, NVC0_CP(TEX_CACHE_CTL), 0);
+      nvc0->tex_cache_seq_cp = tex_cache_seq;
+   }
 
    BEGIN_NVC0(push, NVC0_CP(CP_START_ID), 1);
    PUSH_DATA (push, cp->code_base);

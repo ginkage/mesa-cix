@@ -211,6 +211,9 @@ struct nvc0_context {
    uint16_t constbuf_valid[6];
    uint16_t constbuf_coherent[6];
    bool cb_dirty;
+   /* last screen->base.tex_cache_seq each engine invalidated for */
+   uint32_t tex_cache_seq_3d;
+   uint32_t tex_cache_seq_cp; /* Fermi; Kepler+ QMDs always invalidate */
 
    struct pipe_vertex_buffer vtxbuf[PIPE_MAX_ATTRIBS];
    unsigned num_vtxbufs;

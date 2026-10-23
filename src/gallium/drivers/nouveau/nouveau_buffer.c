@@ -560,6 +560,8 @@ nouveau_buffer_transfer_unmap(struct pipe_context *pipe,
          /* make sure we invalidate dedicated caches */
          if (bind & (PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER))
             nv->vbo_dirty = true;
+         if (buf->status & NOUVEAU_BUFFER_STATUS_SAMPLED)
+            p_atomic_inc(&nv->screen->tex_cache_seq);
       }
    }
 

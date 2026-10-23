@@ -515,7 +515,8 @@ nvc0_validate_tic(struct nvc0_context *nvc0, int s)
       nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
       res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
-      res->status |=  NOUVEAU_BUFFER_STATUS_GPU_READING;
+      res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |
+                     NOUVEAU_BUFFER_STATUS_SAMPLED;
 
       if (!dirty)
          continue;
@@ -580,7 +581,8 @@ nve4_validate_tic(struct nvc0_context *nvc0, unsigned s)
       nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
       res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
-      res->status |=  NOUVEAU_BUFFER_STATUS_GPU_READING;
+      res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |
+                     NOUVEAU_BUFFER_STATUS_SAMPLED;
 
       nvc0->tex_handles[s][i] &= ~NVE4_TIC_ENTRY_INVALID;
       nvc0->tex_handles[s][i] |= tic->id;
@@ -891,6 +893,7 @@ nve4_make_texture_handle_resident(struct pipe_context *pipe,
       res->handle = handle;
       res->buf = nv04_resource(tic->pipe.texture);
       res->flags = NOUVEAU_BO_RD;
+      res->buf->status |= NOUVEAU_BUFFER_STATUS_SAMPLED;
       list_add(&res->list, &nvc0->tex_head);
    } else {
       list_for_each_entry_safe(struct nvc0_resident, pos, &nvc0->tex_head, list) {
@@ -1286,7 +1289,8 @@ gm107_validate_surfaces(struct nvc0_context *nvc0,
    nvc0->screen->tic.lock[tic->id / 32] |= 1 << (tic->id % 32);
 
    res->status &= ~NOUVEAU_BUFFER_STATUS_GPU_WRITING;
-   res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING;
+   res->status |= NOUVEAU_BUFFER_STATUS_GPU_READING |
+                  NOUVEAU_BUFFER_STATUS_SAMPLED;
 
    BCTX_REFN(nvc0->bufctx_3d, 3D_SUF, res, RD);
 
@@ -1416,6 +1420,7 @@ nve4_make_image_handle_resident(struct pipe_context *pipe, uint64_t handle,
       res->handle = handle;
       res->buf = nv04_resource(view->resource);
       res->flags = (access & 3) << 8;
+      res->buf->status |= NOUVEAU_BUFFER_STATUS_SAMPLED;
       list_add(&res->list, &nvc0->img_head);
    } else {
       list_for_each_entry_safe(struct nvc0_resident, pos, &nvc0->img_head, list) {
@@ -1502,6 +1507,7 @@ gm107_make_image_handle_resident(struct pipe_context *pipe, uint64_t handle,
       res->handle = handle;
       res->buf = nv04_resource(tic->pipe.texture);
       res->flags = (access & 3) << 8;
+      res->buf->status |= NOUVEAU_BUFFER_STATUS_SAMPLED;
       if (res->buf->base.target == PIPE_BUFFER &&
           access & PIPE_IMAGE_ACCESS_WRITE)
          util_range_add(&res->buf->base, &res->buf->valid_buffer_range,

@@ -937,6 +937,7 @@ nvc0_draw_single_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
    struct nvc0_context *nvc0 = nvc0_context(pipe);
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_screen *screen = nvc0->screen;
+   uint32_t tex_cache_seq;
    int s;
 
    simple_mtx_assert_locked(&nvc0->screen->state_lock);
@@ -973,6 +974,13 @@ nvc0_draw_single_vbo(struct pipe_context *pipe, const struct pipe_draw_info *inf
       PUSH_SPACE(push, 1);
       IMMED_NVC0(push, NVC0_3D(MEM_BARRIER), 0x1011);
       nvc0->cb_dirty = false;
+   }
+
+   tex_cache_seq = p_atomic_read(&nvc0->screen->base.tex_cache_seq);
+   if (nvc0->tex_cache_seq_3d != tex_cache_seq) {
+      PUSH_SPACE(push, 1);
+      IMMED_NVC0(push, NVC0_3D(TEX_CACHE_CTL), 0);
+      nvc0->tex_cache_seq_3d = tex_cache_seq;
    }
 
    for (s = 0; s < 5; ++s) {

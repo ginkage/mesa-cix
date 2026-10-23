@@ -112,6 +112,8 @@ nvc0_memory_barrier(struct pipe_context *pipe, unsigned flags)
       return;
 
    if (flags & PIPE_BARRIER_MAPPED_BUFFER) {
+      p_atomic_inc(&nvc0->screen->base.tex_cache_seq);
+
       for (i = 0; i < nvc0->num_vtxbufs; ++i) {
          if (!nvc0->vtxbuf[i].buffer.resource && !nvc0->vtxbuf[i].is_user_buffer)
             continue;
