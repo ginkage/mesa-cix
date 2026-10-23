@@ -84,5 +84,9 @@ nvc0_miptree_transfer_map(struct pipe_context *pctx,
 void
 nvc0_miptree_transfer_unmap(struct pipe_context *pcontext,
                             struct pipe_transfer *ptx);
+void
+nvc0_miptree_transfer_flush_region(struct pipe_context *pctx,
+                                   struct pipe_transfer *ptx,
+                                   const struct pipe_box *box);
 
 #endif

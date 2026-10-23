@@ -492,14 +492,57 @@ nvc0_miptree_transfer_map(struct pipe_context *pctx,
    return tx->rect[1].bo->map;
 }
 
+/* Copy a box of the staging map, relative to the mapped box, to the texture. */
+static void
+nvc0_miptree_transfer_write(struct nvc0_context *nvc0,
+                            const struct nvc0_transfer *tx,
+                            const struct pipe_box *box)
+{
+   struct nv50_miptree *mt = nv50_miptree(tx->base.resource);
+   const enum pipe_format format = tx->base.resource->format;
+   const unsigned nx = util_format_get_nblocksx(format, box->width) << mt->ms_x;
+   const unsigned ny = util_format_get_nblocksy(format, box->height) << mt->ms_y;
+   struct nv50_m2mf_rect dst = tx->rect[0];
+   struct nv50_m2mf_rect src = tx->rect[1];
+   int i;
+
+   src.x = util_format_get_nblocksx(format, box->x) << mt->ms_x;
+   src.y = util_format_get_nblocksy(format, box->y) << mt->ms_y;
+   src.base += box->z * tx->base.layer_stride;
+   dst.x += src.x;
+   dst.y += src.y;
+   if (mt->layout_3d)
+      dst.z += box->z;
+   else
+      dst.base += box->z * mt->layer_stride;
+
+   for (i = 0; i < box->depth; ++i) {
+      nvc0->m2mf_copy_rect(nvc0, &dst, &src, nx, ny);
+      if (mt->layout_3d)
+         dst.z++;
+      else
+         dst.base += mt->layer_stride;
+      src.base += tx->base.layer_stride;
+   }
+}
+
+void
+nvc0_miptree_transfer_flush_region(struct pipe_context *pctx,
+                                   struct pipe_transfer *transfer,
+                                   const struct pipe_box *box)
+{
+   struct nvc0_transfer *tx = (struct nvc0_transfer *)transfer;
+
+   if (!(tx->base.usage & PIPE_MAP_DIRECTLY))
+      nvc0_miptree_transfer_write(nvc0_context(pctx), tx, box);
+}
+
 void
 nvc0_miptree_transfer_unmap(struct pipe_context *pctx,
                             struct pipe_transfer *transfer)
 {
    struct nvc0_context *nvc0 = nvc0_context(pctx);
    struct nvc0_transfer *tx = (struct nvc0_transfer *)transfer;
-   struct nv50_miptree *mt = nv50_miptree(tx->base.resource);
-   unsigned i;
 
    if (tx->base.usage & PIPE_MAP_DIRECTLY) {
       pipe_resource_reference(&transfer->resource, NULL);
@@ -509,14 +552,11 @@ nvc0_miptree_transfer_unmap(struct pipe_context *pctx,
    }
 
    if (tx->base.usage & PIPE_MAP_WRITE) {
-      for (i = 0; i < tx->nlayers; ++i) {
-         nvc0->m2mf_copy_rect(nvc0, &tx->rect[0], &tx->rect[1],
-                              tx->nblocksx, tx->nblocksy);
-         if (mt->layout_3d)
-            tx->rect[0].z++;
-         else
-            tx->rect[0].base += mt->layer_stride;
-         tx->rect[1].base += tx->nblocksy * tx->base.stride;
+      if (!(tx->base.usage & PIPE_MAP_FLUSH_EXPLICIT)) {
+         struct pipe_box box = { .width = tx->base.box.width,
+                                 .height = tx->base.box.height,
+                                 .depth = tx->base.box.depth };
+         nvc0_miptree_transfer_write(nvc0, tx, &box);
       }
       NOUVEAU_DRV_STAT(&nvc0->screen->base, tex_transfers_wr, 1);
 

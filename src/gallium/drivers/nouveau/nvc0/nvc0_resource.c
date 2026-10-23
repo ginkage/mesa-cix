@@ -149,12 +149,23 @@ nvc0_resource_from_user_memory(struct pipe_screen *pipe,
    return nouveau_buffer_create_from_user(pipe, templ, user_memory);
 }
 
+static void
+nvc0_transfer_flush_region(struct pipe_context *pipe,
+                           struct pipe_transfer *transfer,
+                           const struct pipe_box *box)
+{
+   if (transfer->resource->target == PIPE_BUFFER)
+      nouveau_buffer_transfer_flush_region(pipe, transfer, box);
+   else
+      nvc0_miptree_transfer_flush_region(pipe, transfer, box);
+}
+
 void
 nvc0_init_resource_functions(struct pipe_context *pcontext)
 {
    pcontext->buffer_map = nouveau_buffer_transfer_map;
    pcontext->texture_map = nvc0_miptree_transfer_map;
-   pcontext->transfer_flush_region = nouveau_buffer_transfer_flush_region;
+   pcontext->transfer_flush_region = nvc0_transfer_flush_region;
    pcontext->buffer_unmap = nouveau_buffer_transfer_unmap;
    pcontext->texture_unmap = nvc0_miptree_transfer_unmap;
    pcontext->buffer_subdata = u_default_buffer_subdata;
