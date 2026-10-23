@@ -1279,6 +1279,16 @@ nvc0_blit_3d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
    y0 *= (float)(1 << nv50_miptree(src)->ms_y);
    y1 *= (float)(1 << nv50_miptree(src)->ms_y);
 
+   /* A point-sampled resolve fetches sample 0, at the pixel's top left. */
+   if (!blit->filter && src->nr_samples > MAX2(dst->nr_samples, 1)) {
+      const float dx = ((1 << nv50_miptree(src)->ms_x) - 1) * 0.5f;
+      const float dy = ((1 << nv50_miptree(src)->ms_y) - 1) * 0.5f;
+      x0 -= dx;
+      x1 -= dx;
+      y0 -= dy;
+      y1 -= dy;
+   }
+
    dz = (float)info->src.box.depth / (float)info->dst.box.depth;
    z = (float)info->src.box.z;
    if (nv50_miptree(src)->layout_3d)
@@ -1485,9 +1495,10 @@ nvc0_blit_eng2d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
    int i;
    uint32_t mode;
    uint32_t mask = nv50_blit_eng2d_get_mask(info);
+   const unsigned filter = nv50_blit_get_filter(info);
    bool b;
 
-   mode = nv50_blit_get_filter(info) ?
+   mode = filter ?
       NV50_2D_BLIT_CONTROL_FILTER_BILINEAR :
       NV50_2D_BLIT_CONTROL_FILTER_POINT_SAMPLE;
    mode |= (src->base.base.nr_samples > dst->base.base.nr_samples) ?
@@ -1555,8 +1566,9 @@ nvc0_blit_eng2d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
    srcx = (int64_t)(info->src.box.x + srcx_adj) << (src->ms_x + 32);
    srcy = (int64_t)(info->src.box.y + srcy_adj) << (src->ms_y + 32);
 
-   if (src->base.base.nr_samples > dst->base.base.nr_samples) {
-      /* center src coorinates for proper MS resolve filtering */
+   if (filter && src->base.base.nr_samples > dst->base.base.nr_samples) {
+      /* center src coorinates for proper MS resolve filtering; a point
+       * sample stays at the pixel's top left, which is sample 0 */
       srcx += (int64_t)1 << (src->ms_x + 31);
       srcy += (int64_t)1 << (src->ms_y + 31);
    }
