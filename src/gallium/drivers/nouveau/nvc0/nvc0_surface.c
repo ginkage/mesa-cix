@@ -1395,7 +1395,7 @@ nvc0_blit_3d(struct nvc0_context *nvc0, const struct pipe_blit_info *info)
    PUSH_DATAh(push, vtxbuf + length - 1);
    PUSH_DATA (push, vtxbuf + length - 1);
 
-   n = MAX2(2, nvc0->state.num_vtxelts);
+   n = MAX3(2, nvc0->state.num_vtxelts, util_last_bit(nvc0->state.instance_elts));
 
    BEGIN_NVC0(push, NVC0_3D(VERTEX_ATTRIB_FORMAT(0)), n);
    PUSH_DATA (push, NVC0_3D_VERTEX_ATTRIB_FORMAT_TYPE_FLOAT |
