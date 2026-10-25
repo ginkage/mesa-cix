@@ -314,7 +314,7 @@ nvk_AllocateMemory(VkDevice device,
    }
 
    struct nvk_memory_heap *heap = &pdev->mem_heaps[type->heapIndex];
-   p_atomic_add(&heap->used, mem->mem->size_B);
+   p_atomic_add(heap->used, mem->mem->size_B);
 
    *pMem = nvk_device_memory_to_handle(mem);
 
@@ -341,7 +341,7 @@ nvk_FreeMemory(VkDevice device,
 
    const VkMemoryType *type = &pdev->mem_types[mem->vk.memory_type_index];
    struct nvk_memory_heap *heap = &pdev->mem_heaps[type->heapIndex];
-   p_atomic_add(&heap->used, -((int64_t)mem->mem->size_B));
+   p_atomic_add(heap->used, -((int64_t)mem->mem->size_B));
 
    nvkmd_mem_unref(mem->mem);
 

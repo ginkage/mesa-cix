@@ -30,9 +30,12 @@ struct nvk_queue_family {
    VkQueueGlobalPriority max_priority;
 };
 
+struct nvk_heap_usage;
+
 struct nvk_memory_heap {
    uint64_t size;
-   uint64_t used;
+   /* Shared by every VkPhysicalDevice of this GPU in the process */
+   uint64_t *used;
    VkMemoryHeapFlags flags;
    uint64_t (*available)(struct nvk_physical_device *pdev);
 };
@@ -52,6 +55,7 @@ struct nvk_physical_device {
 
    // TODO: add mapable VRAM heap if possible
    struct nvk_memory_heap mem_heaps[3];
+   struct nvk_heap_usage *heap_usage;
    VkMemoryType mem_types[3];
    uint8_t mem_heap_count;
    uint8_t mem_type_count;

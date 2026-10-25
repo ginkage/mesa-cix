@@ -23,6 +23,7 @@
 #include "util/hex.h"
 #include "util/mesa-blake3.h"
 #include "util/os_misc.h"
+#include "util/simple_mtx.h"
 
 #include "vk_android.h"
 #include "vk_device.h"
@@ -1528,6 +1529,58 @@ nvk_get_vram_heap_available(struct nvk_physical_device *pdev)
    return pdev->info.vram_size_B - used;
 }
 
+/* VK_EXT_memory_budget heapUsage is per process, but the application may
+ * create several instances, each with its own nvk_physical_device.
+ */
+struct nvk_heap_usage {
+   struct list_head link;
+   dev_t render_dev;
+   uint32_t ref_count;
+   uint64_t used[ARRAY_SIZE(((struct nvk_physical_device *)NULL)->mem_heaps)];
+};
+
+static simple_mtx_t nvk_heap_usages_mtx = SIMPLE_MTX_INITIALIZER;
+static struct list_head nvk_heap_usages = {
+   &nvk_heap_usages, &nvk_heap_usages
+};
+
+static struct nvk_heap_usage *
+nvk_heap_usage_get(dev_t render_dev)
+{
+   struct nvk_heap_usage *usage = NULL;
+
+   simple_mtx_lock(&nvk_heap_usages_mtx);
+   list_for_each_entry(struct nvk_heap_usage, u, &nvk_heap_usages, link) {
+      if (u->render_dev == render_dev) {
+         usage = u;
+         usage->ref_count++;
+         break;
+      }
+   }
+   if (usage == NULL) {
+      usage = calloc(1, sizeof(*usage));
+      if (usage != NULL) {
+         usage->render_dev = render_dev;
+         usage->ref_count = 1;
+         list_addtail(&usage->link, &nvk_heap_usages);
+      }
+   }
+   simple_mtx_unlock(&nvk_heap_usages_mtx);
+
+   return usage;
+}
+
+static void
+nvk_heap_usage_release(struct nvk_heap_usage *usage)
+{
+   simple_mtx_lock(&nvk_heap_usages_mtx);
+   if (--usage->ref_count == 0) {
+      list_del(&usage->link);
+      free(usage);
+   }
+   simple_mtx_unlock(&nvk_heap_usages_mtx);
+}
+
 VkResult
 nvk_create_drm_physical_device(struct vk_instance *_instance,
                                struct _drmDevice *drm_device,
@@ -1713,6 +1766,14 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
    assert(pdev->mem_heap_count <= ARRAY_SIZE(pdev->mem_heaps));
    assert(pdev->mem_type_count <= ARRAY_SIZE(pdev->mem_types));
 
+   pdev->heap_usage = nvk_heap_usage_get(nvkmd->drm.render_dev);
+   if (pdev->heap_usage == NULL) {
+      result = vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto fail_disk_cache;
+   }
+   for (uint32_t i = 0; i < pdev->mem_heap_count; i++)
+      pdev->mem_heaps[i].used = &pdev->heap_usage->used[i];
+
    pdev->queue_families[pdev->queue_family_count++] = (struct nvk_queue_family) {
       .queue_flags = VK_QUEUE_GRAPHICS_BIT |
                      VK_QUEUE_COMPUTE_BIT |
@@ -1741,13 +1802,17 @@ nvk_create_drm_physical_device(struct vk_instance *_instance,
 #ifdef NVK_USE_WSI_PLATFORM
    result = nvk_init_wsi(pdev);
    if (result != VK_SUCCESS)
-      goto fail_disk_cache;
+      goto fail_heap_usage;
 #endif
 
    *pdev_out = &pdev->vk;
 
    return VK_SUCCESS;
 
+#ifdef NVK_USE_WSI_PLATFORM
+fail_heap_usage:
+   nvk_heap_usage_release(pdev->heap_usage);
+#endif
 fail_disk_cache:
    nvk_physical_device_free_disk_cache(pdev);
    nak_compiler_destroy(pdev->nak);
@@ -1769,6 +1834,7 @@ nvk_physical_device_destroy(struct vk_physical_device *vk_pdev)
 #ifdef NVK_USE_WSI_PLATFORM
    nvk_finish_wsi(pdev);
 #endif
+   nvk_heap_usage_release(pdev->heap_usage);
    nvk_physical_device_free_disk_cache(pdev);
    nak_compiler_destroy(pdev->nak);
    nvkmd_pdev_destroy(pdev->nvkmd);
@@ -1806,7 +1872,7 @@ nvk_GetPhysicalDeviceMemoryProperties2(
 
          for (unsigned i = 0; i < pdev->mem_heap_count; i++) {
             const struct nvk_memory_heap *heap = &pdev->mem_heaps[i];
-            uint64_t used = p_atomic_read(&heap->used);
+            uint64_t used = p_atomic_read(heap->used);
 
             /* From the Vulkan 1.3.278 spec:
              *
