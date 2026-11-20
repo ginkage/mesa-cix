@@ -748,6 +748,25 @@ zink_draw_finish(struct zink_context *ctx,
       }
    }
 
+   /* Without supportsNonZeroFirstInstance, firstInstance must be 0 while a binding has an instance divisor
+    * other than 1. The element an instance-rate attribute reads is firstInstance + instance / divisor,
+    * so start the instance-rate bindings firstInstance elements later and draw from instance 0 instead.
+    * gl_InstanceID is unaffected; gl_BaseInstance reads 0 for such draws. Indirect draws are not covered.
+    */
+   struct pipe_draw_info rebased_dinfo;
+   const bool rebase_instances = unlikely(screen->driver_workarounds.no_nonzero_first_instance) &&
+                                 dinfo->start_instance && ctx->element_state->has_instance_divisor &&
+                                 !(dindirect && dindirect->buffer) && !so_target &&
+                                 !screen->info.have_KHR_device_address_commands;
+   if (rebase_instances) {
+      const bool dynamic_stride = !(DYNAMIC_STATE == ZINK_DYNAMIC_VERTEX_INPUT || DYNAMIC_STATE == ZINK_DYNAMIC_VERTEX_INPUT2 ||
+                                    DYNAMIC_STATE == ZINK_NO_DYNAMIC_STATE || !ctx->gfx_pipeline_state.uses_dynamic_stride);
+      zink_bind_vertex_buffers_rebased(ctx, ctx->vertex_buffers, dynamic_stride, dinfo->start_instance);
+      rebased_dinfo = *dinfo;
+      rebased_dinfo.start_instance = 0;
+      dinfo = &rebased_dinfo;
+   }
+
    const unsigned replays = screen->driver_workarounds.no_multi_viewport ? ctx->vp_state.num_viewports : 1;
    for (unsigned vp = 0; vp < replays; vp++) {
       if (replays > 1)
@@ -808,6 +827,8 @@ zink_draw_finish(struct zink_context *ctx,
          }
       }
    }
+   if (rebase_instances)
+      zink_mark_atom_dirty(ctx, ZINK_ATOM_VERTEX_BUFFERS);
    if (replays > 1) {
       /* the next draw sets its own viewports again */
       zink_mark_atom_dirty(ctx, ZINK_ATOM_VIEWPORT);

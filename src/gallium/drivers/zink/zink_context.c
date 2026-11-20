@@ -1634,7 +1634,8 @@ zink_set_vertex_buffers_optimal(struct pipe_context *pctx,
 }
 
 ALWAYS_INLINE static void
-zink_bind_vertex_buffers_internal(struct zink_context *ctx, const struct pipe_vertex_buffer *vbuffers, bool have_dynamic_stride)
+zink_bind_vertex_buffers_internal(struct zink_context *ctx, const struct pipe_vertex_buffer *vbuffers, bool have_dynamic_stride,
+                                  unsigned first_instance)
 {
    VkBuffer buffers[PIPE_MAX_ATTRIBS];
    VkDeviceSize buffer_offsets[PIPE_MAX_ATTRIBS];
@@ -1647,7 +1648,7 @@ zink_bind_vertex_buffers_internal(struct zink_context *ctx, const struct pipe_ve
          struct zink_resource *res = zink_resource(vb->buffer.resource);
          assert(res->obj->buffer);
          buffers[i] = res->obj->buffer;
-         buffer_offsets[i] = vb->buffer_offset;
+         buffer_offsets[i] = vb->buffer_offset + (VkDeviceSize)first_instance * elems->instance_stride[i];
       } else {
          buffers[i] = VK_NULL_HANDLE;
          buffer_offsets[i] = 0;
@@ -1668,13 +1669,21 @@ zink_bind_vertex_buffers_internal(struct zink_context *ctx, const struct pipe_ve
 void
 zink_bind_vertex_buffers_dynamic(struct zink_context *ctx, const struct pipe_vertex_buffer *vbuffers)
 {
-   zink_bind_vertex_buffers_internal(ctx, vbuffers, true);
+   zink_bind_vertex_buffers_internal(ctx, vbuffers, true, 0);
 }
 
 void
 zink_bind_vertex_buffers(struct zink_context *ctx, const struct pipe_vertex_buffer *vbuffers)
 {
-   zink_bind_vertex_buffers_internal(ctx, vbuffers, false);
+   zink_bind_vertex_buffers_internal(ctx, vbuffers, false, 0);
+}
+
+/* binds the instance-rate bindings starting at first_instance, for a draw with firstInstance 0 */
+void
+zink_bind_vertex_buffers_rebased(struct zink_context *ctx, const struct pipe_vertex_buffer *vbuffers,
+                                 bool have_dynamic_stride, unsigned first_instance)
+{
+   zink_bind_vertex_buffers_internal(ctx, vbuffers, have_dynamic_stride, first_instance);
 }
 
 void

@@ -330,6 +330,10 @@ struct zink_vertex_elements_hw_state {
 };
 
 struct zink_vertex_elements_state {
+   /* per hw binding: stride of an instance-rate binding, 0 for vertex rate */
+   uint32_t instance_stride[PIPE_MAX_ATTRIBS];
+   /* some instance-rate binding has a divisor other than 1 */
+   bool has_instance_divisor;
    /* decomposed attributes read only a single component for format compatibility */
    bool has_decomposed_attrs;
    struct {
@@ -1638,6 +1642,7 @@ struct zink_screen {
    struct {
       bool broken_l4a4;
       bool no_multi_viewport;
+      bool no_nonzero_first_instance;
       /* https://gitlab.khronos.org/vulkan/vulkan/-/issues/3306
        * HI TURNIP
        */

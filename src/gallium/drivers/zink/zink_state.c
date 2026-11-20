@@ -153,6 +153,13 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
    }
    ves->hw_state.num_bindings = num_bindings;
    ves->hw_state.num_attribs = num_elements;
+   for (int j = 0; j < num_bindings; ++j) {
+      if (ves->bindings[j].inputRate != VK_VERTEX_INPUT_RATE_INSTANCE)
+         continue;
+      ves->instance_stride[j] = screen->info.have_EXT_vertex_input_dynamic_state ? strides[j] : ves->hw_state.b.strides[j];
+      if (ves->divisor[j] != 1)
+         ves->has_instance_divisor = true;
+   }
    if (screen->info.have_EXT_vertex_input_dynamic_state) {
       for (int j = 0; j < num_bindings; ++j) {
          ves->hw_state.dynbindings[j].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
