@@ -4727,6 +4727,15 @@ zink_flush(struct pipe_context *pctx,
       if (!(flags & (PIPE_FLUSH_DEFERRED | PIPE_FLUSH_ASYNC)))
          sync_flush(ctx, bs);
    }
+
+   /* Without implicit sync in the kernel, nothing makes whoever imports the dma-bufs of this frame (an X
+    * server presenting a DRI3 back buffer without kopper) wait for their rendering: finish it before the
+    * frame is handed over. Kopper's swapchain images aren't exportable, so this doesn't apply to them. */
+   if ((flags & PIPE_FLUSH_END_OF_FRAME) && !(flags & (PIPE_FLUSH_DEFERRED | PIPE_FLUSH_ASYNC)) &&
+       ctx->dmabuf_written && screen->driver_workarounds.dmabuf_no_implicit_sync && ctx->last_batch_state) {
+      stall(ctx);
+      ctx->dmabuf_written = false;
+   }
 }
 
 void

@@ -1661,6 +1661,9 @@ struct zink_screen {
       bool broken_cache_semantics;
       bool missing_a8_unorm;
       bool implicit_sync;
+      /* The kernel driver neither waits for nor signals the implicit fences of dma-bufs (Mali's kbase):
+       * whoever imports a dma-buf zink rendered to may read it before the rendering is done. */
+      bool dmabuf_no_implicit_sync;
       bool disable_optimized_compile;
       bool always_feedback_loop;
       bool always_feedback_loop_zs;
@@ -2022,6 +2025,8 @@ struct zink_context {
    uint16_t fbfetch_outputs;
    uint16_t feedback_loops;
    struct zink_resource *needs_present;
+   /* an exportable dma-buf was written since the last end-of-frame flush (dmabuf_no_implicit_sync) */
+   bool dmabuf_written;
 
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
    unsigned vertex_buffers_count;

@@ -3162,6 +3162,8 @@ init_driver_workarounds(struct zink_screen *screen)
    default:
       break;
    }
+   /* kbase (CSF) has no implicit sync for dma-bufs at all */
+   screen->driver_workarounds.dmabuf_no_implicit_sync = zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY;
    /* TODO: maybe compile multiple variants for different set counts for compact mode? */
    if (screen->info.props.limits.maxBoundDescriptorSets < ZINK_DESCRIPTOR_ALL_TYPES ||
        zink_debug & (ZINK_DEBUG_COMPACT | ZINK_DEBUG_NOSHOBJ))
