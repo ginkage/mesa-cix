@@ -547,9 +547,13 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
     * eglSwapBuffers() returns causes serialization issues with the Wayland
     * surface protocol and can lead to the compositor booting the app.  This
     * means we can't do async submit on Wayland.
+    *
+    * Not so with the Mali proprietary driver: Wayland surfaces belong to its
+    * window system integration layer, which makes the surface calls itself,
+    * from its own presentation thread for FIFO swapchains.
     */
    cdt->async = util_queue_is_initialized(&screen->flush_queue) &&
-                cdt->type != KOPPER_WAYLAND;
+                (cdt->type != KOPPER_WAYLAND || zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY);
 
    *stride = cdt->stride;
    return cdt;
