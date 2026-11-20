@@ -3012,6 +3012,21 @@ init_driver_workarounds(struct zink_screen *screen)
                                                         (!(zink_debug & ZINK_DEBUG_GPL) ||
                                                          screen->info.gpl_props.graphicsPipelineLibraryFastLinking ||
                                                          screen->is_cpu);
+   /* without supportsNonZeroFirstInstance, firstInstance must be 0 while an instance-rate binding has a
+    * divisor other than 1: see zink_draw_finish() */
+   if (screen->info.have_EXT_vertex_attribute_divisor && screen->info.device_version >= VK_API_VERSION_1_4) {
+      VkPhysicalDeviceVertexAttributeDivisorProperties vdiv = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES,
+         .supportsNonZeroFirstInstance = VK_TRUE,
+      };
+      VkPhysicalDeviceProperties2 props = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+         .pNext = &vdiv,
+      };
+      VKSCR(GetPhysicalDeviceProperties2)(screen->pdev, &props);
+      screen->driver_workarounds.no_nonzero_first_instance = !vdiv.supportsNonZeroFirstInstance;
+   }
+
    /* the viewport index of a geometry shader is emulated: see emit_emulated_viewport() */
    screen->driver_workarounds.no_multi_viewport = !screen->info.feats.features.multiViewport &&
                                                   screen->info.feats.features.geometryShader;
