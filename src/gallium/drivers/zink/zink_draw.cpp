@@ -228,6 +228,12 @@ update_gfx_pipeline(struct zink_context *ctx, struct zink_batch_state *bs, enum 
    VkPipeline prev_pipeline = ctx->gfx_pipeline_state.pipeline;
    const struct zink_screen *screen = zink_screen(ctx->base.screen);
    bool shaders_changed = ctx->gfx_dirty || ctx->dirty_gfx_stages;
+   if (!screen->info.feats.features.alphaToOne && !screen->optimal_keys) {
+      const bool alpha_to_one = ctx->gfx_pipeline_state.rast_samples > 0 && ctx->gfx_pipeline_state.blend_state &&
+                                ctx->gfx_pipeline_state.blend_state->alpha_to_one;
+      if (zink_get_fs_key(ctx)->alpha_to_one != alpha_to_one)
+         zink_set_fs_key(ctx)->alpha_to_one = alpha_to_one;
+   }
    if (screen->optimal_keys && !ctx->is_generated_gs_bound)
       zink_gfx_program_update_optimal(ctx);
    else
