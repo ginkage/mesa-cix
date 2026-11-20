@@ -170,6 +170,10 @@ spirv_builder_emit_member_offset(struct spirv_builder *b, SpvId target,
                                  uint32_t member, uint32_t offset);
 
 void
+spirv_builder_emit_member_builtin(struct spirv_builder *b, SpvId target,
+                                  uint32_t member, SpvBuiltIn builtin);
+
+void
 spirv_builder_emit_member_matrix_stride(struct spirv_builder *b, SpvId target,
                                         uint32_t member, uint32_t stride);
 

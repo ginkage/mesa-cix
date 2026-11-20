@@ -399,6 +399,15 @@ emit_member_decoration(struct spirv_builder *b, SpvId target, uint32_t member,
 }
 
 void
+spirv_builder_emit_member_builtin(struct spirv_builder *b, SpvId target,
+                                  uint32_t member, SpvBuiltIn builtin)
+{
+   uint32_t args[] = { builtin };
+   emit_member_decoration(b, target, member, SpvDecorationBuiltIn,
+                          args, ARRAY_SIZE(args));
+}
+
+void
 spirv_builder_emit_member_offset(struct spirv_builder *b, SpvId target,
                           uint32_t member, uint32_t offset)
 {
