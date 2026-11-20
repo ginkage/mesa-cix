@@ -4390,6 +4390,10 @@ zink_shader_compile(struct zink_screen *screen, bool can_shobj, struct zink_shad
       }
    }
 
+   /* without alphaToOne, the shader writes the alpha of its colors as 1.0 */
+   if (nir->info.stage == MESA_SHADER_FRAGMENT && key && zink_fs_key(key)->alpha_to_one)
+      NIR_PASS(_, nir, nir_lower_alpha_to_one);
+
    NIR_PASS(_, nir, add_derefs);
    NIR_PASS(_, nir, nir_lower_fragcolor, nir->info.fs.color_is_dual_source ? 1 : 8);
    if (key) {

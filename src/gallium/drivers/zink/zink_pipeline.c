@@ -118,11 +118,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    ms_state.rasterizationSamples = state->rast_samples + 1;
    if (state->blend_state) {
       ms_state.alphaToCoverageEnable = state->blend_state->alpha_to_coverage;
-      if (state->blend_state->alpha_to_one && !screen->info.feats.features.alphaToOne) {
-         static bool warned = false;
-         warn_missing_feature(warned, "alphaToOne");
-      }
-      ms_state.alphaToOneEnable = state->blend_state->alpha_to_one;
+      /* without alphaToOne, the fragment shader does it: see zink_fs_key::alpha_to_one */
+      ms_state.alphaToOneEnable = state->blend_state->alpha_to_one && screen->info.feats.features.alphaToOne;
    }
    /* "If pSampleMask is NULL, it is treated as if the mask has all bits set to 1."
     * - Chapter 27. Rasterization
@@ -571,11 +568,8 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
          blend_state.logicOp = state->blend_state->logicop_func;
 
          ms_state.alphaToCoverageEnable = state->blend_state->alpha_to_coverage;
-         if (state->blend_state->alpha_to_one && !screen->info.feats.features.alphaToOne) {
-            static bool warned = false;
-            warn_missing_feature(warned, "alphaToOne");
-         }
-         ms_state.alphaToOneEnable = state->blend_state->alpha_to_one;
+         /* without alphaToOne, the fragment shader does it: see zink_fs_key::alpha_to_one */
+         ms_state.alphaToOneEnable = state->blend_state->alpha_to_one && screen->info.feats.features.alphaToOne;
       }
       ms_state.rasterizationSamples = state->rast_samples + 1;
       /* "If pSampleMask is NULL, it is treated as if the mask has all bits set to 1."
