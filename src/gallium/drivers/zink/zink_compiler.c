@@ -1215,7 +1215,7 @@ lower_system_values_to_inlined_uniforms_instr(nir_builder *b,
    nir_def *dwords[2] = {NULL};
    for (unsigned i = 0; i < num_dwords; i++)
       dwords[i] = nir_load_ubo(b, 1, 32, nir_imm_int(b, 0),
-                                   nir_imm_int(b, inlined_uniform_offset + i),
+                                   nir_imm_int(b, inlined_uniform_offset + i * sizeof(uint32_t)),
                                    .align_mul = intrin->def.bit_size / 8,
                                    .align_offset = 0,
                                    .range_base = 0, .range = ~0);
