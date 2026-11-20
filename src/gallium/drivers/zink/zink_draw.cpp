@@ -912,6 +912,15 @@ zink_draw(struct pipe_context *pctx,
       dinfo = &rebased_dinfo;
    }
 
+   /* see zink_lower_gs_polygon_cull() */
+   if (unlikely(ctx->is_generated_gs_bound && ctx->rast_state->base.fill_front != PIPE_POLYGON_MODE_FILL)) {
+      uint32_t polygon_cull = ctx->rast_state->base.cull_face |
+                              (ctx->vp_state.viewport_states[0].scale[1] < 0 ? ZINK_POLYGON_CULL_Y_FLIP : 0) |
+                              (ctx->rast_state->base.front_ccw ? ZINK_POLYGON_CULL_CCW : 0);
+      VKCTX(CmdPushConstants)(bs->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_ALL_GRAPHICS,
+                              offsetof(struct zink_gfx_push_constant, polygon_cull), sizeof(uint32_t), &polygon_cull);
+   }
+
    bool needs_drawid = reads_drawid && zink_get_last_vertex_key(ctx)->push_drawid;
    const unsigned replays = screen->driver_workarounds.no_multi_viewport ? ctx->vp_state.num_viewports : 1;
    for (unsigned vp = 0; vp < replays; vp++) {

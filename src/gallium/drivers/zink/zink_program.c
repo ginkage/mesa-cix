@@ -2890,8 +2890,16 @@ zink_set_primitive_emulation_keys(struct zink_context *ctx)
    bool lower_filled_quad =  lower_quad_prim &&
       ctx->gfx_pipeline_state.rast_prim == MESA_PRIM_TRIANGLES;
 
+   /* without fillModeNonSolid, draw polygons in line mode as their outlines: closed line strips */
+   bool lower_fill_mode_line = screen->driver_workarounds.emulate_fill_mode_line &&
+      ctx->rast_state->base.fill_front == PIPE_POLYGON_MODE_LINE &&
+      ctx->gfx_pipeline_state.rast_prim == MESA_PRIM_LINES &&
+      u_reduced_prim(ctx->gfx_pipeline_state.gfx_prim_mode) != MESA_PRIM_LINES &&
+      /* polygon modes don't apply to transform feedback */
+      !ctx->num_so_targets;
+
    if (lower_line_stipple || lower_line_smooth ||
-       lower_edge_flags || lower_quad_prim ||
+       lower_edge_flags || lower_quad_prim || lower_fill_mode_line ||
        lower_pv_mode || zink_get_gs_key(ctx)->lower_gl_point) {
       mesa_shader_stage prev_vertex_stage =
          ctx->gfx_stages[MESA_SHADER_TESS_EVAL] ?
@@ -2923,8 +2931,12 @@ zink_set_primitive_emulation_keys(struct zink_context *ctx)
                   prim,
                   ctx->gfx_pipeline_state.rast_prim,
                   lower_edge_flags,
-                  lower_line_stipple || lower_quad_prim,
+                  lower_line_stipple || lower_quad_prim || lower_fill_mode_line,
                   true);
+               /* polygons drawn as lines or points: Vulkan won't cull those */
+               if (u_reduced_prim(prim) == MESA_PRIM_TRIANGLES &&
+                   ctx->gfx_pipeline_state.rast_prim != MESA_PRIM_TRIANGLES)
+                  NIR_PASS(_, nir, zink_lower_gs_polygon_cull);
             }
             zink_lower_system_values_to_inlined_uniforms(nir);
 
