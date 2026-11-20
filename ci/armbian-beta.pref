@@ -1,0 +1,8 @@
+# Take only libdrm, Mesa and mesa-libclc (all their binary packages) from Armbian beta; nothing else.
+Package: src:libdrm src:mesa src:mesa-libclc
+Pin: origin "beta.armbian.com"
+Pin-Priority: 500
+
+Package: *
+Pin: origin "beta.armbian.com"
+Pin-Priority: -1

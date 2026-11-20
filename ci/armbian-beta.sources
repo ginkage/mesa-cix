@@ -1,0 +1,7 @@
+# Armbian beta resolute-desktop: Armbian's Mesa build depends on mesa-libclc, which only this repo has
+# (with a libdrm-dev matching Armbian's libdrm2). Restricted by armbian-beta.pref.
+Types: deb
+URIs: http://beta.armbian.com
+Suites: resolute
+Components: resolute-desktop
+Signed-By: /usr/share/keyrings/armbian-archive-keyring.gpg
