@@ -3225,7 +3225,15 @@ init_driver_workarounds(struct zink_screen *screen)
                                                         (!(zink_debug & ZINK_DEBUG_GPL) ||
                                                          screen->info.gpl_props.graphicsPipelineLibraryFastLinking ||
                                                          screen->is_cpu);
-   screen->driver_workarounds.broken_l4a4 = zink_driverid(screen) == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+   switch (zink_driverid(screen)) {
+   case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
+   case VK_DRIVER_ID_ARM_PROPRIETARY:
+      screen->driver_workarounds.broken_l4a4 = true;
+      break;
+   default:
+      screen->driver_workarounds.broken_l4a4 = false;
+      break;
+   }
    if (zink_driverid(screen) == VK_DRIVER_ID_MESA_TURNIP) {
       /* performance */
       screen->info.border_color_feats.customBorderColorWithoutFormat = VK_FALSE;
