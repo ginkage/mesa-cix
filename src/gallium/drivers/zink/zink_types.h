@@ -1040,6 +1040,7 @@ struct zink_gfx_push_constant {
    uint32_t line_stipple_pattern;
    float viewport_scale[2];
    float line_width;
+   uint32_t viewport_index;
 };
 
 /* The order of the enums MUST match the order of the zink_gfx_push_constant
@@ -1054,6 +1055,7 @@ enum zink_gfx_push_constant_member {
    ZINK_GFX_PUSHCONST_LINE_STIPPLE_PATTERN,
    ZINK_GFX_PUSHCONST_VIEWPORT_SCALE,
    ZINK_GFX_PUSHCONST_LINE_WIDTH,
+   ZINK_GFX_PUSHCONST_VIEWPORT_INDEX,
    ZINK_GFX_PUSHCONST_MAX
 };
 
@@ -1635,6 +1637,7 @@ struct zink_screen {
    } driver_compiler_workarounds;
    struct {
       bool broken_l4a4;
+      bool no_multi_viewport;
       /* https://gitlab.khronos.org/vulkan/vulkan/-/issues/3306
        * HI TURNIP
        */

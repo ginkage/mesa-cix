@@ -2151,7 +2151,8 @@ bind_last_vertex_stage(struct zink_context *ctx, mesa_shader_stage stage, struct
       /* number of enabled viewports is based on whether last vertex stage writes viewport index */
       if (ctx->last_vertex_stage) {
          if (ctx->last_vertex_stage->info.outputs_written & (VARYING_BIT_VIEWPORT | VARYING_BIT_VIEWPORT_MASK))
-            ctx->vp_state.num_viewports = MIN2(screen->info.props.limits.maxViewports, PIPE_MAX_VIEWPORTS);
+            ctx->vp_state.num_viewports = screen->driver_workarounds.no_multi_viewport ? PIPE_MAX_VIEWPORTS :
+                                          MIN2(screen->info.props.limits.maxViewports, PIPE_MAX_VIEWPORTS);
          else
             ctx->vp_state.num_viewports = 1;
       } else {

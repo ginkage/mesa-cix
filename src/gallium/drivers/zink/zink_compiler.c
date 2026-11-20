@@ -107,6 +107,7 @@ fields[member_idx].offset = offsetof(struct zink_gfx_push_constant, field);
    PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_LINE_STIPPLE_PATTERN, line_stipple_pattern);
    PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_VIEWPORT_SCALE, viewport_scale);
    PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_LINE_WIDTH, line_width);
+   PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_VIEWPORT_INDEX, viewport_index);
 
    pushconst = nir_variable_create(nir, nir_var_mem_push_const,
                                    glsl_struct_type(fields, ZINK_GFX_PUSHCONST_MAX, "struct", false),
@@ -3066,6 +3067,49 @@ fix_var_int_floatness(nir_shader *producer, nir_shader *consumer)
 
 static const int clip0_relocate_target = VARYING_SLOT_VAR30;
 
+/* multiViewport emulation (see emit_emulated_viewport()): the geometry shader keeps the viewport
+ * index it writes in a local variable, and only emits a vertex if that matches the viewport the
+ * draw is being replayed for. VARYING_SLOT_VIEWPORT stays in outputs_written, so that draws with
+ * this shader are replayed for every viewport.
+ */
+static bool
+lower_gs_viewport_index(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_variable *index = nir_local_variable_create(impl, glsl_uint_type(), "viewport_index");
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+   nir_store_var(&b, index, nir_imm_int(&b, 0), 0x1);
+
+   struct util_dynarray emits;
+   util_dynarray_init(&emits, NULL);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_store_output &&
+             nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_VIEWPORT) {
+            b.cursor = nir_before_instr(instr);
+            nir_store_var(&b, index, intr->src[0].ssa, 0x1);
+            nir_instr_remove(instr);
+         } else if (intr->intrinsic == nir_intrinsic_emit_vertex ||
+                    intr->intrinsic == nir_intrinsic_emit_vertex_with_counter) {
+            util_dynarray_append(&emits, instr);
+         }
+      }
+   }
+   util_dynarray_foreach(&emits, nir_instr *, instr) {
+      b.cursor = nir_before_instr(*instr);
+      nir_def *replay = nir_load_push_constant_zink(&b, 1, 32, nir_imm_int(&b, ZINK_GFX_PUSHCONST_VIEWPORT_INDEX));
+      nir_push_if(&b, nir_ieq(&b, nir_load_var(&b, index), replay));
+      nir_instr_remove(*instr);
+      nir_builder_instr_insert(&b, *instr);
+      nir_pop_if(&b, NULL);
+   }
+   util_dynarray_fini(&emits);
+   return nir_progress(true, impl, nir_metadata_none);
+}
+
 static bool
 move_clip_intrins(nir_builder *b, nir_intrinsic_instr *intr, void *unused)
 {
@@ -5865,6 +5909,9 @@ zink_shader_init(struct zink_screen *screen, struct zink_shader *zs)
            nir->info.stage == MESA_SHADER_GEOMETRY))
          lower_cull_control_outputs(nir);
    }
+   if (screen->driver_workarounds.no_multi_viewport && nir->info.stage == MESA_SHADER_GEOMETRY &&
+       (nir->info.outputs_written & VARYING_BIT_VIEWPORT))
+      NIR_PASS(_, nir, lower_gs_viewport_index);
 
    NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
    if (nir->info.io_lowered) {
