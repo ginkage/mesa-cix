@@ -3303,6 +3303,44 @@ lower_cull_fs(nir_shader *producer, nir_shader *fs)
    NIR_PASS(_, fs, nir_lower_discard_if, nir_lower_demote_if_to_cf | nir_lower_terminate_if_to_cf);
 }
 
+static bool
+read_color_as_back_color(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const unsigned *front = data;
+   bool is_load = false, is_input = false, is_interp = false;
+   if (!filter_io_instr(intr, &is_load, &is_input, &is_interp) || !is_load || !is_input)
+      return false;
+   nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+   if (sem.location != *front)
+      return false;
+   sem.location = *front - VARYING_SLOT_COL0 + VARYING_SLOT_BFC0;
+   nir_intrinsic_set_io_semantics(intr, sem);
+   return true;
+}
+
+/* When the producer writes only the back color, assign_consumer_var_io() gives the fragment shader's
+ * front color input the location of its back color input, so that the front color reads the back
+ * color. Two inputs at one location are invalid, though (Vulkan's "Location Assignment"), and some
+ * drivers (Mali proprietary) read zeroes for both: read the back color input instead.
+ */
+static bool
+merge_front_into_back_color(nir_shader *fs)
+{
+   bool progress = false;
+   for (unsigned i = 0; i < 2; i++) {
+      nir_variable *front = nir_find_variable_with_location(fs, nir_var_shader_in, VARYING_SLOT_COL0 + i);
+      nir_variable *back = nir_find_variable_with_location(fs, nir_var_shader_in, VARYING_SLOT_BFC0 + i);
+      if (!front || !back || front->data.driver_location == UINT_MAX ||
+          front->data.driver_location != back->data.driver_location)
+         continue;
+      unsigned location = VARYING_SLOT_COL0 + i;
+      nir_shader_intrinsics_pass(fs, read_color_as_back_color, nir_metadata_control_flow, &location);
+      front->data.mode = nir_var_shader_temp;
+      progress = true;
+   }
+   return progress;
+}
+
 void
 zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_shader *consumer)
 {
@@ -3381,6 +3419,8 @@ zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_sh
       }
       if (consumer->info.stage == MESA_SHADER_FRAGMENT && screen->driver_compiler_workarounds.needs_sanitised_layer)
          do_fixup |= clamp_layer_output(producer, consumer, &io.reserved);
+      if (consumer->info.stage == MESA_SHADER_FRAGMENT)
+         do_fixup |= merge_front_into_back_color(consumer);
    }
    if (producer->info.has_transform_feedback_varyings && consumer->info.stage == MESA_SHADER_FRAGMENT)
       do_fixup |= align_array_slot_io(producer, consumer);
