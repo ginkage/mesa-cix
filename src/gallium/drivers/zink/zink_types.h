@@ -1555,6 +1555,7 @@ struct zink_screen {
       bool broken_const;
       bool needs_tcs_per_vertex_block;
       bool no_pos_for_varyings;
+      bool needs_strict_io_match;
       bool broken_demote;
    } driver_compiler_workarounds;
    struct {
