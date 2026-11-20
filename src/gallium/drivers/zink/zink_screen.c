@@ -3250,6 +3250,8 @@ init_driver_workarounds(struct zink_screen *screen)
    /* It also loses generic varyings that nir_opt_varyings packs into the position output of a vertex
     * shader feeding a tessellation control shader. */
    screen->driver_compiler_workarounds.no_pos_for_varyings = zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY;
+   /* and inputs that are arrays where the previous stage has outputs per slot */
+   screen->driver_compiler_workarounds.needs_strict_io_match = zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY;
 
    /* line polygon mode is emulated with a generated geometry shader: see zink_set_primitive_emulation_keys() */
    screen->driver_workarounds.emulate_fill_mode_line = !screen->info.feats.features.fillModeNonSolid &&

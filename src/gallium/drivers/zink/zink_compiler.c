@@ -3018,14 +3018,29 @@ scalarize_vars_instr_filter(const nir_intrinsic_instr * intrin, const void *data
 static void
 split_fs_indirect_arrays(nir_shader *nir)
 {
-   if (nir->info.stage != MESA_SHADER_FRAGMENT)
-      return;
    nir_foreach_variable_with_modes_safe(var, nir, nir_var_shader_in | nir_var_shader_out) {
       exec_node_remove(&var->node);
    }
    /* lower indirect loads to direct+temps and unlower back to convert arrays to slots */
    NIR_PASS(_, nir, nir_lower_io_indirect_loads, nir_var_shader_in, 0);
    NIR_PASS(_, nir, nir_unlower_io_to_vars, false);
+}
+
+static bool
+uses_interp_at_offset_or_sample(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_op op = nir_instr_as_intrinsic(instr)->intrinsic;
+            if (op == nir_intrinsic_load_barycentric_at_offset || op == nir_intrinsic_load_barycentric_at_sample)
+               return true;
+         }
+      }
+   }
+   return false;
 }
 
 static bool
@@ -3422,7 +3437,10 @@ zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_sh
       if (consumer->info.stage == MESA_SHADER_FRAGMENT)
          do_fixup |= merge_front_into_back_color(consumer);
    }
-   if (producer->info.has_transform_feedback_varyings && consumer->info.stage == MESA_SHADER_FRAGMENT)
+   if ((producer->info.has_transform_feedback_varyings && consumer->info.stage == MESA_SHADER_FRAGMENT) ||
+       /* splitting arrays per slot would lose interpolateAtOffset/AtSample of them */
+       (screen->driver_compiler_workarounds.needs_strict_io_match &&
+        !(consumer->info.stage == MESA_SHADER_FRAGMENT && uses_interp_at_offset_or_sample(consumer))))
       do_fixup |= align_array_slot_io(producer, consumer);
    nir_shader_gather_info(producer, nir_shader_get_entrypoint(producer));
    if (producer->info.io_lowered && consumer->info.io_lowered) {
