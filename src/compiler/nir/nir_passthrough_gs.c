@@ -151,7 +151,9 @@ nir_create_passthrough_gs(const nir_shader_compiler_options *options,
       nir->xfb_info = ralloc_memdup(nir, prev_stage->xfb_info, size);
    }
 
-   bool handle_flat = output_lines && nir->info.gs.output_primitive != gs_out_prim_for_topology(primitive_type);
+   /* lines or points made of polygons (or points of lines) take flat values from the provoking vertex */
+   bool handle_flat = (output_lines || nir->info.gs.output_primitive == MESA_PRIM_POINTS) &&
+                      nir->info.gs.output_primitive != gs_out_prim_for_topology(primitive_type);
    nir_variable *in_vars[VARYING_SLOT_MAX * 4];
    nir_variable *out_vars[VARYING_SLOT_MAX * 4];
    unsigned num_inputs = 0, num_outputs = 0;
