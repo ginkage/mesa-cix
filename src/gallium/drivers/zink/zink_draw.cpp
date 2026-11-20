@@ -300,41 +300,87 @@ zink_rast_prim(const struct zink_context *ctx,
    return prim_type;
 }
 
+ALWAYS_INLINE static VkViewport
+zink_viewport(const struct zink_context *ctx, unsigned i)
+{
+   VkViewport viewport = {
+      ctx->vp_state.viewport_states[i].translate[0] - ctx->vp_state.viewport_states[i].scale[0],
+      ctx->vp_state.viewport_states[i].translate[1] - ctx->vp_state.viewport_states[i].scale[1],
+      MAX2(ctx->vp_state.viewport_states[i].scale[0] * 2, 1),
+      ctx->vp_state.viewport_states[i].scale[1] * 2,
+      CLAMP(ctx->rast_state->base.clip_halfz ?
+            ctx->vp_state.viewport_states[i].translate[2] :
+            ctx->vp_state.viewport_states[i].translate[2] - ctx->vp_state.viewport_states[i].scale[2],
+            0, 1),
+      CLAMP(ctx->vp_state.viewport_states[i].translate[2] + ctx->vp_state.viewport_states[i].scale[2],
+            0, 1)
+   };
+   if (!ctx->rast_state->base.half_pixel_center) {
+       /* magic constant value from dxvk */
+       float cf = 0.5f - (1.0f / 128.0f);
+       viewport.x += cf;
+       if (viewport.height < 0)
+          viewport.y += cf;
+       else
+          viewport.y -= cf;
+   }
+   return viewport;
+}
+
+ALWAYS_INLINE static VkRect2D
+zink_scissor(const struct zink_context *ctx, unsigned i)
+{
+   VkRect2D scissor;
+   if (ctx->rast_state->base.scissor) {
+      scissor.offset.x = ctx->vp_state.scissor_states[i].minx;
+      scissor.offset.y = ctx->vp_state.scissor_states[i].miny;
+      scissor.extent.width = ctx->vp_state.scissor_states[i].maxx - ctx->vp_state.scissor_states[i].minx;
+      scissor.extent.height = ctx->vp_state.scissor_states[i].maxy - ctx->vp_state.scissor_states[i].miny;
+   } else {
+      scissor.offset.x = 0;
+      scissor.offset.y = 0;
+      scissor.extent.width = ctx->fb_state.width;
+      scissor.extent.height = ctx->fb_state.height;
+   }
+   return scissor;
+}
+
+/* Without multiViewport, the viewport index a geometry shader writes is emulated: each draw is
+ * replayed once per viewport with only that viewport and scissor set, and the geometry shader only
+ * emits the vertices whose viewport index matches the one pushed (see lower_gs_viewport_index()).
+ */
+template <zink_dynamic_state DYNAMIC_STATE>
+ALWAYS_INLINE static void
+emit_emulated_viewport(struct zink_context *ctx, unsigned i)
+{
+   VkViewport viewport = zink_viewport(ctx, i);
+   VkRect2D scissor = zink_scissor(ctx, i);
+   if (DYNAMIC_STATE != ZINK_NO_DYNAMIC_STATE) {
+      VKCTX(CmdSetViewportWithCount)(ctx->bs->cmdbuf, 1, &viewport);
+      VKCTX(CmdSetScissorWithCount)(ctx->bs->cmdbuf, 1, &scissor);
+   } else {
+      VKCTX(CmdSetViewport)(ctx->bs->cmdbuf, 0, 1, &viewport);
+      VKCTX(CmdSetScissor)(ctx->bs->cmdbuf, 0, 1, &scissor);
+   }
+   VKCTX(CmdPushConstants)(ctx->bs->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_ALL_GRAPHICS,
+                           offsetof(struct zink_gfx_push_constant, viewport_index), sizeof(uint32_t), &i);
+}
+
 template <zink_dynamic_state DYNAMIC_STATE, bool BATCH_CHANGED>
 ALWAYS_INLINE static void
 emit_dynamic_state(struct zink_context *ctx, bool pipeline_changed, unsigned num_viewports, bool uses_shobj)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
+   /* more viewports than the device has are emulated by zink_draw(), one at a time */
+   num_viewports = MIN2(num_viewports, screen->info.props.limits.maxViewports);
    struct zink_batch_state *bs = ctx->bs;
    struct zink_rasterizer_state *rast_state = ctx->rast_state;
    struct zink_depth_stencil_alpha_state *dsa_state = ctx->dsa_state;
 
    if (BATCH_CHANGED || ctx->vp_state_changed || (DYNAMIC_STATE == ZINK_NO_DYNAMIC_STATE && pipeline_changed)) {
       VkViewport viewports[PIPE_MAX_VIEWPORTS];
-      for (unsigned i = 0; i < num_viewports; i++) {
-         VkViewport viewport = {
-            ctx->vp_state.viewport_states[i].translate[0] - ctx->vp_state.viewport_states[i].scale[0],
-            ctx->vp_state.viewport_states[i].translate[1] - ctx->vp_state.viewport_states[i].scale[1],
-            MAX2(ctx->vp_state.viewport_states[i].scale[0] * 2, 1),
-            ctx->vp_state.viewport_states[i].scale[1] * 2,
-            CLAMP(ctx->rast_state->base.clip_halfz ?
-                  ctx->vp_state.viewport_states[i].translate[2] :
-                  ctx->vp_state.viewport_states[i].translate[2] - ctx->vp_state.viewport_states[i].scale[2],
-                  0, 1),
-            CLAMP(ctx->vp_state.viewport_states[i].translate[2] + ctx->vp_state.viewport_states[i].scale[2],
-                  0, 1)
-         };
-         if (!ctx->rast_state->base.half_pixel_center) {
-             /* magic constant value from dxvk */
-             float cf = 0.5f - (1.0f / 128.0f);
-             viewport.x += cf;
-             if (viewport.height < 0)
-                viewport.y += cf;
-             else
-                viewport.y -= cf;
-         }
-         viewports[i] = viewport;
-      }
+      for (unsigned i = 0; i < num_viewports; i++)
+         viewports[i] = zink_viewport(ctx, i);
       if (DYNAMIC_STATE != ZINK_NO_DYNAMIC_STATE)
          VKCTX(CmdSetViewportWithCount)(bs->cmdbuf, num_viewports, viewports);
       else
@@ -342,21 +388,8 @@ emit_dynamic_state(struct zink_context *ctx, bool pipeline_changed, unsigned num
    }
    if (BATCH_CHANGED || ctx->scissor_changed || ctx->vp_state_changed || (DYNAMIC_STATE == ZINK_NO_DYNAMIC_STATE && pipeline_changed)) {
       VkRect2D scissors[PIPE_MAX_VIEWPORTS];
-      if (ctx->rast_state->base.scissor) {
-         for (unsigned i = 0; i < num_viewports; i++) {
-            scissors[i].offset.x = ctx->vp_state.scissor_states[i].minx;
-            scissors[i].offset.y = ctx->vp_state.scissor_states[i].miny;
-            scissors[i].extent.width = ctx->vp_state.scissor_states[i].maxx - ctx->vp_state.scissor_states[i].minx;
-            scissors[i].extent.height = ctx->vp_state.scissor_states[i].maxy - ctx->vp_state.scissor_states[i].miny;
-         }
-      } else {
-         for (unsigned i = 0; i < num_viewports; i++) {
-            scissors[i].offset.x = 0;
-            scissors[i].offset.y = 0;
-            scissors[i].extent.width = ctx->fb_state.width;
-            scissors[i].extent.height = ctx->fb_state.height;
-         }
-      }
+      for (unsigned i = 0; i < num_viewports; i++)
+         scissors[i] = zink_scissor(ctx, i);
       if (DYNAMIC_STATE != ZINK_NO_DYNAMIC_STATE)
          VKCTX(CmdSetScissorWithCount)(bs->cmdbuf, num_viewports, scissors);
       else
@@ -861,60 +894,69 @@ zink_draw(struct pipe_context *pctx,
    }
 
    bool needs_drawid = reads_drawid && zink_get_last_vertex_key(ctx)->push_drawid;
-   work_count += num_draws;
-   if (index_size > 0) {
-      if (dindirect && dindirect->buffer) {
-         assert(num_draws == 1);
-         if (needs_drawid)
-            update_drawid(ctx, drawid_offset);
-         struct zink_resource *indirect = zink_resource(dindirect->buffer);
-         zink_batch_reference_resource_rw(ctx, indirect, false);
-         if (dindirect->indirect_draw_count) {
-             struct zink_resource *indirect_draw_count = zink_resource(dindirect->indirect_draw_count);
-             zink_batch_reference_resource_rw(ctx, indirect_draw_count, false);
-             VKCTX(CmdDrawIndexedIndirectCount)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset,
-                                                indirect_draw_count->obj->buffer, dindirect->indirect_draw_count_offset,
-                                                dindirect->draw_count, dindirect->stride);
-         } else
-            VKCTX(CmdDrawIndexedIndirect)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset, dindirect->draw_count, dindirect->stride);
-      } else {
-         if (need_index_buffer_unref)
-            draw_indexed_need_index_buffer_unref(ctx, dinfo, draws, num_draws, drawid_offset, needs_drawid);
-         else
-            draw_indexed<HAS_MULTIDRAW>(ctx, dinfo, draws, num_draws, drawid_offset, needs_drawid);
-      }
-   } else {
-      if (so_target && screen->info.tf_props.transformFeedbackDraw) {
-         /* GTF-GL46.gtf40.GL3Tests.transform_feedback2.transform_feedback2_api attempts a bogus xfb
-          * draw using a streamout target that has no data
-          * to avoid hanging the gpu, reject any such draws
-          */
-         if (so_target->counter_buffer_valid) {
+   const unsigned replays = screen->driver_workarounds.no_multi_viewport ? ctx->vp_state.num_viewports : 1;
+   for (unsigned vp = 0; vp < replays; vp++) {
+      if (replays > 1)
+         emit_emulated_viewport<DYNAMIC_STATE>(ctx, vp);
+      work_count += num_draws;
+      if (index_size > 0) {
+         if (dindirect && dindirect->buffer) {
+            assert(num_draws == 1);
             if (needs_drawid)
                update_drawid(ctx, drawid_offset);
-            zink_batch_reference_resource_rw(ctx, zink_resource(so_target->base.buffer), false);
-            zink_batch_reference_resource_rw(ctx, zink_resource(so_target->counter_buffer), true);
-            VKCTX(CmdDrawIndirectByteCountEXT)(bs->cmdbuf, dinfo->instance_count, dinfo->start_instance,
-                                          zink_resource(so_target->counter_buffer)->obj->buffer, so_target->counter_buffer_offset, 0,
-                                          MIN2(so_target->stride, screen->info.tf_props.maxTransformFeedbackBufferDataStride));
+            struct zink_resource *indirect = zink_resource(dindirect->buffer);
+            zink_batch_reference_resource_rw(ctx, indirect, false);
+            if (dindirect->indirect_draw_count) {
+                struct zink_resource *indirect_draw_count = zink_resource(dindirect->indirect_draw_count);
+                zink_batch_reference_resource_rw(ctx, indirect_draw_count, false);
+                VKCTX(CmdDrawIndexedIndirectCount)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset,
+                                                   indirect_draw_count->obj->buffer, dindirect->indirect_draw_count_offset,
+                                                   dindirect->draw_count, dindirect->stride);
+            } else
+               VKCTX(CmdDrawIndexedIndirect)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset, dindirect->draw_count, dindirect->stride);
+         } else {
+            if (need_index_buffer_unref)
+               draw_indexed_need_index_buffer_unref(ctx, dinfo, draws, num_draws, drawid_offset, needs_drawid);
+            else
+               draw_indexed<HAS_MULTIDRAW>(ctx, dinfo, draws, num_draws, drawid_offset, needs_drawid);
          }
-      } else if (dindirect && dindirect->buffer) {
-         assert(num_draws == 1);
-         if (needs_drawid)
-            update_drawid(ctx, drawid_offset);
-         struct zink_resource *indirect = zink_resource(dindirect->buffer);
-         zink_batch_reference_resource_rw(ctx, indirect, false);
-         if (dindirect->indirect_draw_count) {
-             struct zink_resource *indirect_draw_count = zink_resource(dindirect->indirect_draw_count);
-             zink_batch_reference_resource_rw(ctx, indirect_draw_count, false);
-             VKCTX(CmdDrawIndirectCount)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset,
-                                           indirect_draw_count->obj->buffer, dindirect->indirect_draw_count_offset,
-                                           dindirect->draw_count, dindirect->stride);
-         } else
-            VKCTX(CmdDrawIndirect)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset, dindirect->draw_count, dindirect->stride);
       } else {
-         draw<HAS_MULTIDRAW>(ctx, dinfo, draws, num_draws, drawid_offset, needs_drawid);
+         if (so_target && screen->info.tf_props.transformFeedbackDraw) {
+            /* GTF-GL46.gtf40.GL3Tests.transform_feedback2.transform_feedback2_api attempts a bogus xfb
+             * draw using a streamout target that has no data
+             * to avoid hanging the gpu, reject any such draws
+             */
+            if (so_target->counter_buffer_valid) {
+               if (needs_drawid)
+                  update_drawid(ctx, drawid_offset);
+               zink_batch_reference_resource_rw(ctx, zink_resource(so_target->base.buffer), false);
+               zink_batch_reference_resource_rw(ctx, zink_resource(so_target->counter_buffer), true);
+               VKCTX(CmdDrawIndirectByteCountEXT)(bs->cmdbuf, dinfo->instance_count, dinfo->start_instance,
+                                             zink_resource(so_target->counter_buffer)->obj->buffer, so_target->counter_buffer_offset, 0,
+                                             MIN2(so_target->stride, screen->info.tf_props.maxTransformFeedbackBufferDataStride));
+            }
+         } else if (dindirect && dindirect->buffer) {
+            assert(num_draws == 1);
+            if (needs_drawid)
+               update_drawid(ctx, drawid_offset);
+            struct zink_resource *indirect = zink_resource(dindirect->buffer);
+            zink_batch_reference_resource_rw(ctx, indirect, false);
+            if (dindirect->indirect_draw_count) {
+                struct zink_resource *indirect_draw_count = zink_resource(dindirect->indirect_draw_count);
+                zink_batch_reference_resource_rw(ctx, indirect_draw_count, false);
+                VKCTX(CmdDrawIndirectCount)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset,
+                                              indirect_draw_count->obj->buffer, dindirect->indirect_draw_count_offset,
+                                              dindirect->draw_count, dindirect->stride);
+            } else
+               VKCTX(CmdDrawIndirect)(bs->cmdbuf, indirect->obj->buffer, dindirect->offset, dindirect->draw_count, dindirect->stride);
+         } else {
+            draw<HAS_MULTIDRAW>(ctx, dinfo, draws, num_draws, drawid_offset, needs_drawid);
+         }
       }
+   }
+   if (replays > 1) {
+      /* the next draw sets its own viewports again */
+      ctx->vp_state_changed = true;
    }
 
    if (unlikely(zink_tracing))

@@ -1040,7 +1040,7 @@ zink_init_screen_caps(struct zink_screen *screen)
 
    caps->endianness = PIPE_ENDIAN_NATIVE; /* unsure */
 
-   caps->max_viewports =
+   caps->max_viewports = screen->driver_workarounds.no_multi_viewport ? PIPE_MAX_VIEWPORTS :
       MIN2(screen->info.props.limits.maxViewports, PIPE_MAX_VIEWPORTS);
 
    caps->image_load_formatted =
@@ -1082,11 +1082,12 @@ zink_init_screen_caps(struct zink_screen *screen)
    caps->sampler_view_target = true;
 
    caps->vs_layer_viewport =
-   caps->tes_layer_viewport =
-      screen->info.have_EXT_shader_viewport_index_layer ||
+   /* the multiViewport emulation only covers geometry shaders */
+   caps->tes_layer_viewport = !screen->driver_workarounds.no_multi_viewport &&
+      (screen->info.have_EXT_shader_viewport_index_layer ||
       (screen->spirv_version >= SPIRV_VERSION(1, 5) &&
        screen->info.feats12.shaderOutputLayer &&
-       screen->info.feats12.shaderOutputViewportIndex);
+       screen->info.feats12.shaderOutputViewportIndex));
 
    caps->texture_float_linear = have_fp32_filter_linear(screen);
 
@@ -3011,6 +3012,10 @@ init_driver_workarounds(struct zink_screen *screen)
                                                         (!(zink_debug & ZINK_DEBUG_GPL) ||
                                                          screen->info.gpl_props.graphicsPipelineLibraryFastLinking ||
                                                          screen->is_cpu);
+   /* the viewport index of a geometry shader is emulated: see emit_emulated_viewport() */
+   screen->driver_workarounds.no_multi_viewport = !screen->info.feats.features.multiViewport &&
+                                                  screen->info.feats.features.geometryShader;
+
    switch (zink_driverid(screen)) {
    case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
    case VK_DRIVER_ID_ARM_PROPRIETARY:
