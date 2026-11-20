@@ -2956,6 +2956,8 @@ init_driver_workarounds(struct zink_screen *screen)
    case VK_DRIVER_ID_MESA_PANVK:
    case VK_DRIVER_ID_MESA_NVK:
    case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
+   /* presents through its window system integration layer, whose swapchains wait for rendering */
+   case VK_DRIVER_ID_ARM_PROPRIETARY:
       screen->driver_workarounds.implicit_sync = false;
       break;
    default:
