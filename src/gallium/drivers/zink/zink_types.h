@@ -1035,6 +1035,12 @@ struct zink_compute_pipeline_state {
 /** program types */
 
 /* create_gfx_pushconst must be kept in sync with this struct */
+/* zink_gfx_push_constant::polygon_cull */
+#define ZINK_POLYGON_CULL_FRONT    (1 << 0) /* == VK_CULL_MODE_FRONT_BIT */
+#define ZINK_POLYGON_CULL_BACK     (1 << 1) /* == VK_CULL_MODE_BACK_BIT */
+#define ZINK_POLYGON_CULL_Y_FLIP   (1 << 2) /* viewport height is negative */
+#define ZINK_POLYGON_CULL_CCW      (1 << 3) /* front faces are counter-clockwise */
+
 struct zink_gfx_push_constant {
    unsigned draw_mode_is_indexed;
    unsigned draw_id;
@@ -1045,6 +1051,7 @@ struct zink_gfx_push_constant {
    float viewport_scale[2];
    float line_width;
    uint32_t viewport_index;
+   uint32_t polygon_cull;
 };
 
 /* The order of the enums MUST match the order of the zink_gfx_push_constant
@@ -1060,6 +1067,7 @@ enum zink_gfx_push_constant_member {
    ZINK_GFX_PUSHCONST_VIEWPORT_SCALE,
    ZINK_GFX_PUSHCONST_LINE_WIDTH,
    ZINK_GFX_PUSHCONST_VIEWPORT_INDEX,
+   ZINK_GFX_PUSHCONST_POLYGON_CULL,
    ZINK_GFX_PUSHCONST_MAX
 };
 
@@ -1643,6 +1651,7 @@ struct zink_screen {
       bool broken_l4a4;
       bool no_multi_viewport;
       bool no_nonzero_first_instance;
+      bool emulate_fill_mode_line;
       /* https://gitlab.khronos.org/vulkan/vulkan/-/issues/3306
        * HI TURNIP
        */

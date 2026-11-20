@@ -49,6 +49,9 @@ clamp_stage(const shader_info *info)
 struct nir_shader *
 zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens);
 
+bool
+zink_lower_gs_polygon_cull(nir_shader *gs);
+
 nir_shader*
 zink_create_quads_emulation_gs(const nir_shader_compiler_options *options,
                                const nir_shader *prev_stage);

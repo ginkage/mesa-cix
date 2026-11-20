@@ -767,6 +767,15 @@ zink_draw_finish(struct zink_context *ctx,
       dinfo = &rebased_dinfo;
    }
 
+   /* see zink_lower_gs_polygon_cull() */
+   if (unlikely(ctx->is_generated_gs_bound && ctx->rast_state->base.fill_front != PIPE_POLYGON_MODE_FILL)) {
+      uint32_t polygon_cull = ctx->rast_state->base.cull_face |
+                              (ctx->vp_state.viewport_states[0].scale[1] < 0 ? ZINK_POLYGON_CULL_Y_FLIP : 0) |
+                              (ctx->rast_state->base.front_ccw ? ZINK_POLYGON_CULL_CCW : 0);
+      VKCTX(CmdPushConstants)(bs->cmdbuf, ctx->curr_program->base.layout, VK_SHADER_STAGE_ALL_GRAPHICS,
+                              offsetof(struct zink_gfx_push_constant, polygon_cull), sizeof(uint32_t), &polygon_cull);
+   }
+
    const unsigned replays = screen->driver_workarounds.no_multi_viewport ? ctx->vp_state.num_viewports : 1;
    for (unsigned vp = 0; vp < replays; vp++) {
       if (replays > 1)
@@ -1033,6 +1042,8 @@ zink_draw_atoms(struct zink_context *ctx,
             /* with optimal keys, only these can need a generated geometry shader or have one to unbind */
             if (!screen->optimal_keys || ctx->is_generated_gs_bound || mode == MESA_PRIM_QUADS ||
                 zink_get_gs_key(ctx)->lower_gl_point ||
+                (screen->driver_workarounds.emulate_fill_mode_line &&
+                 rast_state->base.fill_front == PIPE_POLYGON_MODE_LINE) ||
                 (ctx->gfx_stages[MESA_SHADER_VERTEX] && ctx->gfx_stages[MESA_SHADER_VERTEX]->has_edgeflags))
                zink_set_primitive_emulation_keys(ctx);
 

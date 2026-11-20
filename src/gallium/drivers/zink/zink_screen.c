@@ -3241,6 +3241,10 @@ init_driver_workarounds(struct zink_screen *screen)
       screen->driver_workarounds.no_nonzero_first_instance = !vdiv.supportsNonZeroFirstInstance;
    }
 
+   /* line polygon mode is emulated with a generated geometry shader: see zink_set_primitive_emulation_keys() */
+   screen->driver_workarounds.emulate_fill_mode_line = !screen->info.feats.features.fillModeNonSolid &&
+                                                       screen->info.feats.features.geometryShader;
+
    /* the viewport index of a geometry shader is emulated: see emit_emulated_viewport() */
    screen->driver_workarounds.no_multi_viewport = !screen->info.feats.features.multiViewport &&
                                                   screen->info.feats.features.geometryShader;

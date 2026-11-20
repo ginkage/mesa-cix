@@ -613,7 +613,8 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
       if (rs_state->fill_front != PIPE_POLYGON_MODE_FILL &&
           !screen->info.feats.features.fillModeNonSolid) {
          static bool warned = false;
-         warn_missing_feature(warned, "fillModeNonSolid");
+         if (!(rs_state->fill_front == PIPE_POLYGON_MODE_LINE && screen->driver_workarounds.emulate_fill_mode_line))
+            warn_missing_feature(warned, "fillModeNonSolid");
          state->hw_state.polygon_mode = VK_POLYGON_MODE_FILL;
       } else {
          state->hw_state.polygon_mode = rs_state->fill_front; // same values

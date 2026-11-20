@@ -108,6 +108,7 @@ fields[member_idx].offset = offsetof(struct zink_gfx_push_constant, field);
    PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_VIEWPORT_SCALE, viewport_scale);
    PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_LINE_WIDTH, line_width);
    PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_VIEWPORT_INDEX, viewport_index);
+   PUSHCONST_MEMBER(ZINK_GFX_PUSHCONST_POLYGON_CULL, polygon_cull);
 
    pushconst = nir_variable_create(nir, nir_var_mem_push_const,
                                    glsl_struct_type(fields, ZINK_GFX_PUSHCONST_MAX, "struct", false),
@@ -3064,6 +3065,70 @@ fix_var_int_floatness(nir_shader *producer, nir_shader *consumer)
          }
       }
    }
+}
+
+/* A generated geometry shader that draws triangles as lines or points (polygon mode emulation) must
+ * cull them itself: Vulkan only culls polygons. Mirror the rasterizer's test (see the Vulkan spec's
+ * "Basic Polygon Rasterization"): the triangle's signed area in framebuffer coordinates, from its
+ * normalized device coordinates and the sign of the viewport height, against the front face and
+ * cull mode in the polygon_cull push constant.
+ */
+bool
+zink_lower_gs_polygon_cull(nir_shader *gs)
+{
+   nir_variable *pos = nir_find_variable_with_location(gs, nir_var_shader_in, VARYING_SLOT_POS);
+   if (!pos)
+      return false;
+   nir_function_impl *impl = nir_shader_get_entrypoint(gs);
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+
+   nir_def *xy[3];
+   for (unsigned i = 0; i < 3; i++) {
+      nir_def *p = nir_load_array_var_imm(&b, pos, i);
+      xy[i] = nir_fdiv(&b, nir_channels(&b, p, 0x3), nir_channel(&b, p, 3));
+   }
+   nir_def *e1 = nir_fsub(&b, xy[1], xy[0]);
+   nir_def *e2 = nir_fsub(&b, xy[2], xy[0]);
+   /* counter-clockwise positive with y up */
+   nir_def *area = nir_fsub(&b, nir_fmul(&b, nir_channel(&b, e1, 0), nir_channel(&b, e2, 1)),
+                                nir_fmul(&b, nir_channel(&b, e2, 0), nir_channel(&b, e1, 1)));
+   nir_def *bits = nir_load_push_constant_zink(&b, 1, 32, nir_imm_int(&b, ZINK_GFX_PUSHCONST_POLYGON_CULL));
+   /* framebuffer y grows with ndc y unless the viewport height is negative; the spec's area is
+    * counter-clockwise positive with y down */
+   nir_def *y_flip = nir_ine_imm(&b, nir_iand_imm(&b, bits, ZINK_POLYGON_CULL_Y_FLIP), 0);
+   nir_def *fb_area = nir_bcsel(&b, y_flip, area, nir_fneg(&b, area));
+   nir_def *ccw = nir_ine_imm(&b, nir_iand_imm(&b, bits, ZINK_POLYGON_CULL_CCW), 0);
+   nir_def *front = nir_bcsel(&b, ccw, nir_fgt_imm(&b, fb_area, 0.0), nir_flt_imm(&b, fb_area, 0.0));
+   nir_def *cull_front = nir_ine_imm(&b, nir_iand_imm(&b, bits, ZINK_POLYGON_CULL_FRONT), 0);
+   nir_def *cull_back = nir_ine_imm(&b, nir_iand_imm(&b, bits, ZINK_POLYGON_CULL_BACK), 0);
+   nir_def *culled = nir_bcsel(&b, front, cull_front, cull_back);
+   /* clip w <= 0 keeps everything */
+   for (unsigned i = 0; i < 3; i++)
+      culled = nir_iand(&b, culled, nir_fgt_imm(&b, nir_channel(&b, nir_load_array_var_imm(&b, pos, i), 3), 0.0));
+   nir_variable *keep = nir_local_variable_create(impl, glsl_bool_type(), "polygon_keep");
+   nir_store_var(&b, keep, nir_inot(&b, culled), 0x1);
+
+   struct util_dynarray instrs;
+   util_dynarray_init(&instrs, NULL);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_op op = nir_instr_as_intrinsic(instr)->intrinsic;
+         if (op == nir_intrinsic_emit_vertex || op == nir_intrinsic_emit_vertex_with_counter ||
+             op == nir_intrinsic_end_primitive || op == nir_intrinsic_end_primitive_with_counter)
+            util_dynarray_append(&instrs, instr);
+      }
+   }
+   util_dynarray_foreach(&instrs, nir_instr *, instr) {
+      b.cursor = nir_before_instr(*instr);
+      nir_push_if(&b, nir_load_var(&b, keep));
+      nir_instr_remove(*instr);
+      nir_builder_instr_insert(&b, *instr);
+      nir_pop_if(&b, NULL);
+   }
+   util_dynarray_fini(&instrs);
+   return nir_progress(true, impl, nir_metadata_none);
 }
 
 static const int clip0_relocate_target = VARYING_SLOT_VAR30;
