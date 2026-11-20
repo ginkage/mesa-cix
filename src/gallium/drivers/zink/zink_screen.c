@@ -3033,6 +3033,9 @@ init_driver_workarounds(struct zink_screen *screen)
     * gl_out[].gl_Position as a loose arrayed BuiltIn Position output instead of a gl_PerVertex member.
     */
    screen->driver_compiler_workarounds.needs_tcs_per_vertex_block = zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY;
+   /* It also loses generic varyings that nir_opt_varyings packs into the position output of a vertex
+    * shader feeding a tessellation control shader. */
+   screen->driver_compiler_workarounds.no_pos_for_varyings = zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY;
 
    /* line polygon mode is emulated with a generated geometry shader: see zink_set_primitive_emulation_keys() */
    screen->driver_workarounds.emulate_fill_mode_line = !screen->info.feats.features.fillModeNonSolid &&
