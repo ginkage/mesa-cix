@@ -1124,7 +1124,9 @@ zink_init_screen_caps(struct zink_screen *screen)
       caps->pci_group = caps->pci_bus = caps->pci_device = caps->pci_function = 0;
    }
 
-   caps->cull_distance = screen->info.feats.features.shaderCullDistance;
+   /* without shaderClipDistance either, cull distances are emulated along with clip distances */
+   caps->cull_distance = screen->info.feats.features.shaderCullDistance ||
+                         !screen->info.feats.features.shaderClipDistance;
 
    caps->sparse_buffer_page_size =
       screen->info.feats.features.sparseResidencyBuffer ? ZINK_SPARSE_BUFFER_PAGE_SIZE : 0;

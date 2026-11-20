@@ -3098,6 +3098,97 @@ lower_clip_fs(nir_shader *producer, nir_shader *fs)
          glsl_vec_type(fs->info.clip_distance_array_size - 4));
 }
 
+/* Cull distance emulation, for drivers without shaderCullDistance (which, without shaderClipDistance
+ * either, get clip and cull distances merged into one array, clip first, moved to two generic
+ * varyings by move_clip_intrins()). A primitive is culled if all of its vertices have a negative
+ * distance for the same cull plane, which a fragment shader can't tell from interpolated distances.
+ * So the last pre-rasterization stage also writes, per vertex and plane, a control value: -1.0 if
+ * the distance is negative, 1.0 otherwise. Interpolated with noperspective, a control value is
+ * -1.0 throughout the primitive only if it is -1.0 at every vertex, and the fragment shader demotes
+ * its invocation then.
+ */
+static const int cull_control_target = VARYING_SLOT_VAR28;
+
+static void
+store_cull_control(nir_builder *b)
+{
+   const unsigned clip = b->shader->info.clip_distance_array_size;
+   const unsigned cull = b->shader->info.cull_distance_array_size;
+   nir_def *dist[2] = {
+      nir_load_output(b, 4, 32, nir_imm_int(b, 0), .io_semantics.location = clip0_relocate_target,
+                      .io_semantics.num_slots = 1, .dest_type = nir_type_float32),
+      clip + cull > 4 ?
+         nir_load_output(b, 4, 32, nir_imm_int(b, 0), .io_semantics.location = clip0_relocate_target + 1,
+                         .io_semantics.num_slots = 1, .dest_type = nir_type_float32) : NULL,
+   };
+   for (unsigned slot = 0; slot < DIV_ROUND_UP(cull, 4); slot++) {
+      nir_def *ctrl[4];
+      for (unsigned c = 0; c < 4; c++) {
+         const unsigned plane = slot * 4 + c;
+         if (plane < cull) {
+            const unsigned k = clip + plane; /* index in the merged array */
+            nir_def *d = nir_channel(b, dist[k / 4], k % 4);
+            ctrl[c] = nir_bcsel(b, nir_flt_imm(b, d, 0.0), nir_imm_float(b, -1.0), nir_imm_float(b, 1.0));
+         } else {
+            ctrl[c] = nir_imm_float(b, 1.0);
+         }
+      }
+      nir_store_output(b, nir_vec(b, ctrl, 4), nir_imm_int(b, 0),
+                       .io_semantics.location = cull_control_target + slot, .io_semantics.num_slots = 1,
+                       .src_type = nir_type_float32, .write_mask = 0xf);
+      b->shader->info.outputs_written |= BITFIELD64_BIT(cull_control_target + slot);
+   }
+}
+
+static bool
+store_cull_control_before_emit(nir_builder *b, nir_intrinsic_instr *intr, void *unused)
+{
+   if (intr->intrinsic != nir_intrinsic_emit_vertex && intr->intrinsic != nir_intrinsic_emit_vertex_with_counter)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   store_cull_control(b);
+   return true;
+}
+
+static void
+lower_cull_control_outputs(nir_shader *nir)
+{
+   if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, store_cull_control_before_emit, nir_metadata_control_flow, NULL);
+   } else {
+      nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+      nir_builder b = nir_builder_at(nir_after_impl(impl));
+      store_cull_control(&b);
+      nir_progress(true, impl, nir_metadata_control_flow);
+   }
+}
+
+static void
+lower_cull_fs(nir_shader *producer, nir_shader *fs)
+{
+   const unsigned cull = producer->info.cull_distance_array_size;
+   fs->info.cull_distance_array_size = cull;
+   nir_function_impl *impl = nir_shader_get_entrypoint(fs);
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+   nir_def *bary = nir_load_barycentric_pixel(&b, 32, .interp_mode = INTERP_MODE_NOPERSPECTIVE);
+   nir_def *culled = nir_imm_false(&b);
+   for (unsigned slot = 0; slot < DIV_ROUND_UP(cull, 4); slot++) {
+      nir_def *ctrl = nir_load_interpolated_input(&b, 4, 32, bary, nir_imm_int(&b, 0),
+                                                  .io_semantics.location = cull_control_target + slot,
+                                                  .io_semantics.num_slots = 1, .dest_type = nir_type_float32);
+      for (unsigned c = 0; c < 4 && slot * 4 + c < cull; c++)
+         /* -1.0 at every vertex; leave room for barycentric weights that don't sum to exactly 1.0 */
+         culled = nir_ior(&b, culled, nir_flt_imm(&b, nir_channel(&b, ctrl, c), -0.9999));
+      fs->info.inputs_read |= BITFIELD64_BIT(cull_control_target + slot);
+      nir_variable *var = nir_get_variable_with_location(fs, nir_var_shader_in, cull_control_target + slot,
+                                                         glsl_vec4_type());
+      var->data.interpolation = INTERP_MODE_NOPERSPECTIVE;
+   }
+   nir_demote_if(&b, culled);
+   nir_progress(true, impl, nir_metadata_none);
+   NIR_PASS(_, fs, nir_lower_discard_if, nir_lower_demote_if_to_cf | nir_lower_terminate_if_to_cf);
+}
+
 void
 zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_shader *consumer)
 {
@@ -3120,6 +3211,11 @@ zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_sh
    if (!screen->info.feats.features.shaderClipDistance && consumer->info.stage == MESA_SHADER_FRAGMENT &&
        (producer->info.clip_distance_array_size > 0)) {
       lower_clip_fs(producer, consumer);
+      do_fixup = true;
+   }
+   if (!screen->info.feats.features.shaderCullDistance && !screen->info.feats.features.shaderClipDistance &&
+       consumer->info.stage == MESA_SHADER_FRAGMENT && producer->info.cull_distance_array_size > 0) {
+      lower_cull_fs(producer, consumer);
       do_fixup = true;
    }
    fix_var_int_floatness(producer, consumer);
@@ -5759,10 +5855,15 @@ zink_shader_init(struct zink_screen *screen, struct zink_shader *zs)
    NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_in | nir_var_shader_out,
             scalarize_vars_instr_filter, (void*)&filter_data);
 
-   if (!screen->info.feats.features.shaderClipDistance && nir->info.clip_distance_array_size) {
+   if (!screen->info.feats.features.shaderClipDistance &&
+       (nir->info.clip_distance_array_size || nir->info.cull_distance_array_size)) {
       if (nir->info.stage == MESA_SHADER_FRAGMENT)
          NIR_PASS(_, nir, nir_lower_io_indirect_loads, nir_var_shader_in, 0);
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, move_clip_intrins, nir_metadata_control_flow, NULL);
+      if (!screen->info.feats.features.shaderCullDistance && nir->info.cull_distance_array_size &&
+          (nir->info.stage == MESA_SHADER_VERTEX || nir->info.stage == MESA_SHADER_TESS_EVAL ||
+           nir->info.stage == MESA_SHADER_GEOMETRY))
+         lower_cull_control_outputs(nir);
    }
 
    NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
