@@ -1646,6 +1646,7 @@ struct zink_screen {
       bool needs_sanitised_layer;
       bool broken_const;
       bool needs_tcs_per_vertex_block;
+      bool no_pos_for_varyings;
       bool broken_demote;
    } driver_compiler_workarounds;
    struct {

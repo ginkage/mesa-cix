@@ -1308,6 +1308,9 @@ zink_screen_init_compiler(struct zink_screen *screen)
    };
 
    screen->nir_options = default_options;
+   /* don't let nir_opt_varyings pack generic varyings into the position output for non-FS consumers */
+   if (screen->driver_compiler_workarounds.no_pos_for_varyings)
+      screen->nir_options.io_options |= nir_io_dont_use_pos_for_non_fs_varyings;
 
    if (!screen->info.feats.features.shaderInt64)
       screen->nir_options.lower_int64_options = ~0;
