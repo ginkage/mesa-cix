@@ -3027,6 +3027,11 @@ init_driver_workarounds(struct zink_screen *screen)
       screen->driver_workarounds.no_nonzero_first_instance = !vdiv.supportsNonZeroFirstInstance;
    }
 
+   /* The Mali proprietary driver (r54p1) draws nothing when a tessellation control shader writes
+    * gl_out[].gl_Position as a loose arrayed BuiltIn Position output instead of a gl_PerVertex member.
+    */
+   screen->driver_compiler_workarounds.needs_tcs_per_vertex_block = zink_driverid(screen) == VK_DRIVER_ID_ARM_PROPRIETARY;
+
    /* line polygon mode is emulated with a generated geometry shader: see zink_set_primitive_emulation_keys() */
    screen->driver_workarounds.emulate_fill_mode_line = !screen->info.feats.features.fillModeNonSolid &&
                                                        screen->info.feats.features.geometryShader;

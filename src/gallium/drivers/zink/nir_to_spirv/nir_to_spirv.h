@@ -54,6 +54,8 @@ struct ntv_info {
    bool is_native_vulkan; //ignore zink-isms
    bool have_shader_viewport_index_layer;
    bool have_shader_output_layer;
+   /* declare per-vertex TCS built-in outputs as members of a gl_PerVertex block, like glslang */
+   bool tcs_per_vertex_block;
    struct {
       uint8_t flush_denorms:3; // 16, 32, 64
       uint8_t preserve_denorms:3; // 16, 32, 64
