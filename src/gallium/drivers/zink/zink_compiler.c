@@ -220,7 +220,8 @@ lower_gl_point_gs_instr(nir_builder *b, nir_instr *instr, void *data)
    vp_scale = nir_load_push_constant_zink(b, 2, 32, vp_const_pos);
 
    // Load point info values
-   nir_def *point_size = nir_load_var(b, state->gl_point_size);
+   /* the state tracker leaves gl_PointSize out at the default size */
+   nir_def *point_size = state->gl_point_size ? nir_load_var(b, state->gl_point_size) : nir_imm_float(b, 1.0);
    nir_def *point_pos = nir_load_var(b, state->gl_pos_out);
 
    // w_delta = gl_point_size / width_viewport_size_scale * gl_Position.w
@@ -269,9 +270,6 @@ lower_gl_point_gs(nir_shader *shader)
 {
    struct lower_gl_point_state state;
 
-   shader->info.gs.output_primitive = MESA_PRIM_TRIANGLE_STRIP;
-   shader->info.gs.vertices_out *= 4;
-
    // Gets the gl_Position in and out
    state.gl_pos_out =
       nir_find_variable_with_location(shader, nir_var_shader_out,
@@ -280,9 +278,12 @@ lower_gl_point_gs(nir_shader *shader)
       nir_find_variable_with_location(shader, nir_var_shader_out,
                                       VARYING_SLOT_PSIZ);
 
-   // if position in or gl_PointSize aren't written, we have nothing to do
-   if (!state.gl_pos_out || !state.gl_point_size)
+   // if position isn't written, we have nothing to do
+   if (!state.gl_pos_out)
       return false;
+
+   shader->info.gs.output_primitive = MESA_PRIM_TRIANGLE_STRIP;
+   shader->info.gs.vertices_out *= 4;
 
    return nir_shader_instructions_pass(shader, lower_gl_point_gs_instr,
                                        nir_metadata_control_flow, &state);
