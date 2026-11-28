@@ -24,6 +24,14 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential debhelper devscripts fakeroot dpkg-dev git ca-certificates curl meson
+          # The snapshot needs a newer libdrm (and the PPA builds against its wayland) than resolute has:
+          # take the build dependencies from the mesaaco PPA too. The packages run with resolute's.
+          mkdir -p /etc/apt/keyrings
+          curl -fsSL --retry 3 -o /etc/apt/keyrings/mesaaco.asc \
+            'https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0xF7D9F0EAA92354B674013D4523A159D3E514D90F'
+          printf '%s\n' 'Types: deb' 'URIs: https://ppa.launchpadcontent.net/ernstp/mesaaco/ubuntu/' 'Suites: resolute' \
+            'Components: main' 'Signed-By: /etc/apt/keyrings/mesaaco.asc' > /etc/apt/sources.list.d/mesaaco.sources
+          apt-get update
 
       - name: Checkout repository
         uses: actions/checkout@v4

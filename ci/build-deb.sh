@@ -9,7 +9,8 @@
 #   ci/build-deb.sh <work dir> [--install-deps]
 #
 # --install-deps runs "apt-get build-dep" (as root, e.g. in CI); otherwise the build dependencies must
-# already be installed (see dpkg-checkbuilddeps). The packaging is fetched unless given:
+# already be installed (see dpkg-checkbuilddeps). Some come only from the mesaaco PPA (the snapshot needs
+# libdrm >= 2.4.133, resolute has 2.4.131), so add it first; the packages built run with resolute's. The packaging is fetched unless given:
 #   DEBIAN_DIR=<dir with debian/>          the PPA's packaging of $MESAACO_VERSION
 # The version is the PPA's plus "+rk<commit date>", so every newer commit sorts higher, and above the
 # PPA's own build of the same snapshot (but below its next snapshot: pin the packages). Output:
