@@ -1488,8 +1488,14 @@ zink_is_format_supported(struct pipe_screen *pscreen,
       if (bind & PIPE_BIND_VERTEX_BUFFER) {
          if (!(props->bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
             enum pipe_format new_format = zink_decompose_vertex_format(format);
-            if (!new_format)
-               return false;
+            if (!new_format) {
+               /* a packed format whose twin with R and B swapped is supported: fetched with the twin, the
+                * vertex shader swaps R and B back (needs the vertex shader key, so not with optimal keys)
+                */
+               enum pipe_format swapped = util_format_rgb_to_bgr(format);
+               return !screen->optimal_keys && swapped &&
+                      zink_get_format_props(screen, swapped)->bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
+            }
             if (!(zink_get_format_props(screen, new_format)->bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT))
                return false;
          }

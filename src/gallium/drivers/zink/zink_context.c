@@ -1450,43 +1450,51 @@ zink_bind_vertex_elements_state(struct pipe_context *pctx,
       if (zink_screen(pctx->screen)->optimal_keys)
          return;
       const struct zink_vs_key *vs = zink_get_vs_key(ctx);
-      uint32_t decomposed_attrs = 0, decomposed_attrs_without_w = 0;
+      uint32_t decomposed_attrs = 0, decomposed_attrs_without_w = 0, swap_rb_attrs = 0;
       switch (vs->size) {
       case 1:
          decomposed_attrs = vs->u8.decomposed_attrs;
          decomposed_attrs_without_w = vs->u8.decomposed_attrs_without_w;
+         swap_rb_attrs = vs->u8.swap_rb_attrs;
          break;
       case 2:
          decomposed_attrs = vs->u16.decomposed_attrs;
          decomposed_attrs_without_w = vs->u16.decomposed_attrs_without_w;
+         swap_rb_attrs = vs->u16.swap_rb_attrs;
          break;
       case 4:
          decomposed_attrs = vs->u32.decomposed_attrs;
          decomposed_attrs_without_w = vs->u32.decomposed_attrs_without_w;
+         swap_rb_attrs = vs->u32.swap_rb_attrs;
          break;
       }
       if (ctx->element_state->decomposed_attrs != decomposed_attrs ||
-          ctx->element_state->decomposed_attrs_without_w != decomposed_attrs_without_w) {
-         unsigned size = MAX2(ctx->element_state->decomposed_attrs_size, ctx->element_state->decomposed_attrs_without_w_size);
+          ctx->element_state->decomposed_attrs_without_w != decomposed_attrs_without_w ||
+          ctx->element_state->swap_rb_attrs != swap_rb_attrs) {
+         unsigned size = MAX3(ctx->element_state->decomposed_attrs_size, ctx->element_state->decomposed_attrs_without_w_size,
+                              ctx->element_state->swap_rb_attrs_size);
          struct zink_shader_key *key = (struct zink_shader_key *)zink_set_vs_key(ctx);
-         key->size -= 2 * key->key.vs.size;
          switch (size) {
          case 1:
             key->key.vs.u8.decomposed_attrs = ctx->element_state->decomposed_attrs;
             key->key.vs.u8.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
+            key->key.vs.u8.swap_rb_attrs = ctx->element_state->swap_rb_attrs;
             break;
          case 2:
             key->key.vs.u16.decomposed_attrs = ctx->element_state->decomposed_attrs;
             key->key.vs.u16.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
+            key->key.vs.u16.swap_rb_attrs = ctx->element_state->swap_rb_attrs;
             break;
          case 4:
             key->key.vs.u32.decomposed_attrs = ctx->element_state->decomposed_attrs;
             key->key.vs.u32.decomposed_attrs_without_w = ctx->element_state->decomposed_attrs_without_w;
+            key->key.vs.u32.swap_rb_attrs = ctx->element_state->swap_rb_attrs;
             break;
          default: break;
          }
          key->key.vs.size = size;
-         key->size += 2 * size;
+         /* the hashed part of the key ends with the masks of the size in use */
+         key->size = size ? offsetof(struct zink_vs_key, u8) + 3 * size : sizeof(struct zink_vs_key_base);
       }
    } else {
      state->element_state = NULL;

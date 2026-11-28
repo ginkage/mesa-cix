@@ -2180,6 +2180,45 @@ decompose_attribs(nir_shader *nir, uint32_t decomposed_attrs, uint32_t decompose
 }
 
 static bool
+swap_rb_attrib(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const uint32_t *swap_rb_attrs = data;
+   if (intr->intrinsic != nir_intrinsic_load_deref)
+      return false;
+   nir_variable *var = nir_intrinsic_get_var(intr, 0);
+   if (!var || var->data.mode != nir_var_shader_in || !(*swap_rb_attrs & BITFIELD_BIT(var->data.driver_location)))
+      return false;
+   static const unsigned rb_swizzle[] = {2, 1, 0, 3};
+   b->cursor = nir_after_instr(&intr->instr);
+   nir_def *load = nir_load_deref(b, nir_build_deref_var(b, var));
+   nir_def_rewrite_uses(&intr->def, nir_swizzle(b, load, rb_swizzle, intr->def.num_components));
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+/* these attributes are fetched with their format's twin with R and B swapped (see zink_is_format_supported()),
+ * so swap R and B back after loading them
+ */
+static bool
+swap_rb_attribs(nir_shader *nir, uint32_t swap_rb_attrs)
+{
+   uint32_t swap = 0;
+   nir_foreach_variable_with_modes(var, nir, nir_var_shader_in) {
+      if (!(swap_rb_attrs & BITFIELD_BIT(var->data.driver_location)) || !glsl_type_is_vector_or_scalar(var->type))
+         continue;
+      /* the shader may read fewer components than the swapped one it needs: read them all */
+      var->type = glsl_vector_type(glsl_get_base_type(var->type), 4);
+      swap |= BITFIELD_BIT(var->data.driver_location);
+   }
+   if (!swap)
+      return false;
+   nir_fixup_deref_types(nir);
+   nir_shader_intrinsics_pass(nir, swap_rb_attrib, nir_metadata_control_flow, &swap);
+   nir_opt_dce(nir);
+   return true;
+}
+
+static bool
 rewrite_bo_access_instr(nir_builder *b, nir_instr *instr, void *data)
 {
    struct zink_screen *screen = data;
@@ -4473,25 +4512,30 @@ zink_shader_compile(struct zink_screen *screen, bool can_shobj, struct zink_shad
       if (!screen->optimal_keys) {
          switch (zs->info.stage) {
          case MESA_SHADER_VERTEX: {
-            uint32_t decomposed_attrs = 0, decomposed_attrs_without_w = 0;
+            uint32_t decomposed_attrs = 0, decomposed_attrs_without_w = 0, swap_rb_attrs = 0;
             const struct zink_vs_key *vs_key = zink_vs_key(key);
             switch (vs_key->size) {
             case 4:
                decomposed_attrs = vs_key->u32.decomposed_attrs;
                decomposed_attrs_without_w = vs_key->u32.decomposed_attrs_without_w;
+               swap_rb_attrs = vs_key->u32.swap_rb_attrs;
                break;
             case 2:
                decomposed_attrs = vs_key->u16.decomposed_attrs;
                decomposed_attrs_without_w = vs_key->u16.decomposed_attrs_without_w;
+               swap_rb_attrs = vs_key->u16.swap_rb_attrs;
                break;
             case 1:
                decomposed_attrs = vs_key->u8.decomposed_attrs;
                decomposed_attrs_without_w = vs_key->u8.decomposed_attrs_without_w;
+               swap_rb_attrs = vs_key->u8.swap_rb_attrs;
                break;
             default: break;
             }
             if (decomposed_attrs || decomposed_attrs_without_w)
                NIR_PASS(_, nir, decompose_attribs, decomposed_attrs, decomposed_attrs_without_w);
+            if (swap_rb_attrs)
+               NIR_PASS(_, nir, swap_rb_attribs, swap_rb_attrs);
             break;
          }
 

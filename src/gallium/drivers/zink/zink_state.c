@@ -79,7 +79,14 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
       VkFormat format;
       if (zink_get_format_props(screen, elem->src_format)->bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)
          format = zink_get_format(screen, elem->src_format);
-      else {
+      else if (!zink_decompose_vertex_format(elem->src_format)) {
+         /* see zink_is_format_supported() */
+         enum pipe_format swapped = util_format_rgb_to_bgr(elem->src_format);
+         assert(zink_get_format_props(screen, swapped)->bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+         format = zink_get_format(screen, swapped);
+         ves->swap_rb_attrs |= BITFIELD_BIT(i);
+         ves->swap_rb_attrs_size = i < 8 ? 1 : i < 16 ? 2 : 4;
+      } else {
          enum pipe_format new_format = zink_decompose_vertex_format(elem->src_format);
          assert(new_format);
          num_decomposed++;

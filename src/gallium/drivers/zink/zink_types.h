@@ -341,6 +341,9 @@ struct zink_vertex_elements_state {
    unsigned decomposed_attrs_size;
    uint32_t decomposed_attrs_without_w;
    unsigned decomposed_attrs_without_w_size;
+   /* fetched with the format with R and B swapped: see zink_is_format_supported() */
+   uint32_t swap_rb_attrs;
+   unsigned swap_rb_attrs_size;
    struct zink_vertex_elements_hw_state hw_state;
 };
 

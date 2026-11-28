@@ -43,14 +43,17 @@ struct zink_vs_key {
       struct {
          uint32_t decomposed_attrs;
          uint32_t decomposed_attrs_without_w;
+         uint32_t swap_rb_attrs;
       } u32;
       struct {
          uint16_t decomposed_attrs;
          uint16_t decomposed_attrs_without_w;
+         uint16_t swap_rb_attrs;
       } u16;
       struct {
          uint8_t decomposed_attrs;
          uint8_t decomposed_attrs_without_w;
+         uint8_t swap_rb_attrs;
       } u8;
    };
    // not hashed
